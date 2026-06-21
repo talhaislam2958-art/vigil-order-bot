@@ -196,15 +196,39 @@ export async function tickUser(u: BotUser): Promise<void> {
   const allowed = (u.payment_methods || []).map((s) => s.toLowerCase());
   const newSeen: string[] = [];
 
+  const friendly = (raw: string): string => {
+    const r = raw.toLowerCase();
+    if (r.includes("stc")) return "STC Pay";
+    if (r.includes("urpay") || r.includes("ur pay")) return "Urpay";
+    if (r.includes("barq")) return "Barq";
+    if (r.includes("bank")) return "Banks";
+    return raw || "Unknown";
+  };
+
   for (const o of list.rows) {
     const oid = pickOrderId(o);
     if (!oid || seen.has(oid)) continue;
     newSeen.push(oid);
     const amt = pickAmount(o);
     const pay = pickPayment(o);
+    const payLabel = friendly(pay);
+    const userTag = u.label || u.username;
 
-    if (amt < Number(u.min_price) || amt > Number(u.max_price)) continue;
-    if (allowed.length > 0 && !allowed.some((p) => pay.includes(p))) continue;
+    let skipReason = "";
+    if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
+      skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
+    } else if (allowed.length > 0 && !allowed.some((p) => pay.includes(p))) {
+      skipReason = `Payment "${payLabel}" not in selected filters`;
+    }
+    if (skipReason) {
+      await log(u.id, u.slot, "warn", `Skip ${oid}: ${skipReason}`);
+      await sendTelegram(
+        u.telegram_bot_token,
+        u.telegram_chat_id,
+        `⚠️ <b>Order skipped (Failed Filter Match)</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
+      );
+      continue;
+    }
 
     const res = await receiveOrder(token, oid);
     if (res.ok) {
@@ -213,14 +237,20 @@ export async function tickUser(u: BotUser): Promise<void> {
         .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
         .eq("id", u.id);
       u.orders_grabbed = (u.orders_grabbed || 0) + 1;
-      await log(u.id, u.slot, "success", `Grabbed order ${oid} amount=${amt} pay=${pay}`);
+      await log(u.id, u.slot, "success", `✅ Grabbed ${oid} · ${amt} SAR · ${payLabel}`);
       await sendTelegram(
         u.telegram_bot_token,
         u.telegram_chat_id,
-        `🎯 <b>Order grabbed</b>\nUser: ${u.label || u.username}\nOrder ID: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${pay}`,
+        `🟢 <b>ORDER GRABBED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: <b>${amt} SAR</b>\nPayment: ${payLabel}`,
       );
     } else {
-      await log(u.id, u.slot, "warn", `Receive failed for ${oid}: ${res.msg || res.status}`);
+      const reason = res.msg || `Network Grab Race Lost / Server Error (HTTP ${res.status})`;
+      await log(u.id, u.slot, "warn", `Miss ${oid}: ${reason}`);
+      await sendTelegram(
+        u.telegram_bot_token,
+        u.telegram_chat_id,
+        `🔴 <b>ORDER MISSED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${reason}`,
+      );
     }
   }
 

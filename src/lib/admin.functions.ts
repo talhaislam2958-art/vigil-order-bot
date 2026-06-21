@@ -249,19 +249,36 @@ export const getLogs = createServerFn({ method: "POST" })
     z
       .object({
         token: z.string().uuid(),
-        limit: z.number().int().min(1).max(200).default(80),
+        limit: z.number().int().min(1).max(500).default(80),
+        slot: z.number().int().min(1).max(99).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
     await requireSession(data.token);
     const supabaseAdmin = await getAdminClient();
-    const { data: rows } = await supabaseAdmin
+    let q = supabaseAdmin
       .from("bot_logs")
       .select("id,slot,level,message,created_at")
       .order("created_at", { ascending: false })
       .limit(data.limit);
+    if (data.slot !== undefined) q = q.eq("slot", data.slot);
+    const { data: rows } = await q;
     return rows ?? [];
+  });
+
+export const clearLogs = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z.object({ token: z.string().uuid(), slot: z.number().int().min(1).max(99).optional() }).parse(d),
+  )
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const supabaseAdmin = await getAdminClient();
+    let q = supabaseAdmin.from("bot_logs").delete();
+    if (data.slot !== undefined) q = q.eq("slot", data.slot);
+    else q = q.gte("id", 0);
+    await q;
+    return { ok: true };
   });
 
 export const manualPoll = createServerFn({ method: "POST" })
