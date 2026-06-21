@@ -225,7 +225,7 @@ function Gate({
 type BotUser = Awaited<ReturnType<typeof listUsers>>[number];
 type LogRow = Awaited<ReturnType<typeof getLogs>>[number];
 
-function Dashboard({ token, onLogout }: { token: string; onLogout: () => void }) {
+function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogout: () => void; theme: Theme; setTheme: (t: Theme) => void }) {
   const router = useRouter();
   const list = useServerFn(listUsers);
   const logoutFn = useServerFn(logoutMaster);
