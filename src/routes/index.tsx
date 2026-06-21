@@ -715,17 +715,35 @@ function UserCard({
                 className={input}
               />
             </Field>
-            <Field label="API polling interval (sec)">
+            <Field label="Interval (seconds)">
               <input
                 type="number"
-                min={1}
+                min={0}
                 step={1}
-                value={intervalSec}
-                onChange={(e) =>
-                  setF("polling_interval_ms", Math.max(200, Math.round(Number(e.target.value) * 1000)))
-                }
+                value={Math.floor(intervalSec)}
+                onChange={(e) => {
+                  const sec = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                  const msPart = (v.polling_interval_ms ?? 1000) % 1000;
+                  setF("polling_interval_ms", Math.max(200, sec * 1000 + msPart));
+                }}
                 className={input}
               />
+            </Field>
+            <Field label="Polling INT (ms)">
+              <div className="relative">
+                <Gauge className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="number"
+                  min={200}
+                  step={50}
+                  value={v.polling_interval_ms ?? 1000}
+                  onChange={(e) =>
+                    setF("polling_interval_ms", Math.max(200, Math.min(60000, Math.round(Number(e.target.value) || 0))))
+                  }
+                  className={input + " pl-7"}
+                  placeholder="e.g. 500"
+                />
+              </div>
             </Field>
             <Field label="Last poll">
               <div className="rounded-md border border-border bg-input px-3 py-2 font-mono text-xs text-muted-foreground">
