@@ -290,6 +290,14 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              title="Toggle theme"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider hover:bg-surface-2"
+            >
+              {theme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+              {theme === "dark" ? "Light" : "Dark"}
+            </button>
+            <button
               onClick={async () => {
                 setPolling(true);
                 try {
