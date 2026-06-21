@@ -8,14 +8,17 @@ import {
   CheckCircle2,
   CircleDot,
   Eraser,
+  Gauge,
   Loader2,
   LogOut,
-  Play,
+  Moon,
   Power,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sun,
   Terminal,
+  Trash2,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -31,6 +34,7 @@ import {
   getLogs,
   clearLogs,
   manualPoll,
+  deleteUser,
 } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/")({
