@@ -280,16 +280,6 @@ export const clearLogs = createServerFn({ method: "POST" })
     await q;
     return { ok: true };
   });
-  .handler(async ({ data }) => {
-    await requireSession(data.token);
-    const supabaseAdmin = await getAdminClient();
-    const { data: rows } = await supabaseAdmin
-      .from("bot_logs")
-      .select("id,slot,level,message,created_at")
-      .order("created_at", { ascending: false })
-      .limit(data.limit);
-    return rows ?? [];
-  });
 
 export const manualPoll = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ token: z.string().uuid() }).parse(d))
