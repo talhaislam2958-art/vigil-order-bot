@@ -458,6 +458,7 @@ function UserCard({
   const verifyFn = useServerFn(verifyUser);
   const testFn = useServerFn(testTelegram);
   const clearFn = useServerFn(clearLogs);
+  const deleteFn = useServerFn(deleteUser);
 
   const isVerified = u.status === "authorized" || u.status === "running" || !!u.auth_token_at;
 
