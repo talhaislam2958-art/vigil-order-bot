@@ -335,8 +335,9 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
 
 function StatusPill({ status, msg }: { status: string; msg: string }) {
   const map: Record<string, { c: string; label: string; Icon: React.ComponentType<{ className?: string }> }> = {
-    idle: { c: "bg-muted text-muted-foreground", label: "Idle", Icon: CircleDot },
-    starting: { c: "bg-warning/20 text-warning", label: "Starting…", Icon: Loader2 },
+    idle: { c: "bg-muted text-muted-foreground", label: "Not configured", Icon: CircleDot },
+    starting: { c: "bg-warning/20 text-warning", label: "Verifying…", Icon: Loader2 },
+    authorized: { c: "bg-success/15 text-success", label: "Authorized — idle", Icon: ShieldCheck },
     running: { c: "bg-success/20 text-success", label: "Authorized / Running", Icon: CheckCircle2 },
     invalid_creds: { c: "bg-destructive/20 text-destructive", label: "Invalid Username or Password", Icon: XCircle },
     suspended: { c: "bg-destructive/20 text-destructive", label: "No Permission / Account Suspended", Icon: XCircle },
@@ -351,26 +352,82 @@ function StatusPill({ status, msg }: { status: string; msg: string }) {
   );
 }
 
+function StepBadge({ n, state, label }: { n: number; state: "done" | "active" | "locked"; label: string }) {
+  const styles =
+    state === "done"
+      ? "bg-success text-success-foreground border-success"
+      : state === "active"
+        ? "bg-primary text-primary-foreground border-primary"
+        : "bg-surface text-muted-foreground border-border";
+  return (
+    <div className="flex items-center gap-2">
+      <div className={`grid size-6 place-items-center rounded-full border text-[11px] font-bold ${styles}`}>
+        {state === "done" ? <CheckCircle2 className="size-3.5" /> : n}
+      </div>
+      <span className={`text-xs font-medium ${state === "locked" ? "text-muted-foreground" : "text-foreground"}`}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
 function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChanged: () => void }) {
   const updateFn = useServerFn(updateUser);
+  const verifyFn = useServerFn(verifyUser);
   const testFn = useServerFn(testTelegram);
+
+  const isVerified = u.status === "authorized" || u.status === "running" || !!u.auth_token_at;
+
+  // Step 1 local state — credentials only
+  const [username, setUsername] = useState(u.username ?? "");
+  const [password, setPassword] = useState(u.password ?? "");
+  const [verifying, setVerifying] = useState(false);
+
+  // Step 2 local state — advanced config
   const [local, setLocal] = useState<Partial<BotUser>>({});
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [toggling, setToggling] = useState(false);
+  const [stopping, setStopping] = useState(false);
+
+  // Reset local on slot identity change
+  useEffect(() => {
+    setUsername(u.username ?? "");
+    setPassword(u.password ?? "");
+    setLocal({});
+  }, [u.id, u.username, u.password]);
 
   const v = { ...u, ...local };
-  const dirty = Object.keys(local).length > 0;
 
-  async function save() {
+  const credsDirty = username !== (u.username ?? "") || password !== (u.password ?? "");
+
+  async function verify() {
+    if (!username.trim() || !password.trim()) {
+      toast.error("Enter username and password");
+      return;
+    }
+    setVerifying(true);
+    try {
+      const r = await verifyFn({ data: { token, id: u.id, username: username.trim(), password } });
+      if (r.ok) {
+        toast.success(`Slot ${u.slot} authorized`);
+      } else {
+        toast.error(r.message || "Verification failed");
+      }
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  async function saveAndStart() {
     setSaving(true);
     try {
-      // Build patch with type narrowing
-      const patch: Record<string, unknown> = {};
-      for (const k of Object.keys(local)) patch[k] = (local as Record<string, unknown>)[k];
+      const patch: Record<string, unknown> = { ...local, is_active: true };
       await updateFn({ data: { token, id: u.id, patch: patch as never } });
       setLocal({});
-      toast.success(`Slot ${u.slot} saved`);
+      toast.success(`Slot ${u.slot} configurations saved · bot running`);
       onChanged();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -379,19 +436,16 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
     }
   }
 
-  async function toggle(next: boolean) {
-    setToggling(true);
+  async function stop() {
+    setStopping(true);
     try {
-      // First save any pending edits along with the toggle
-      const patch: Record<string, unknown> = { ...local, is_active: next };
-      await updateFn({ data: { token, id: u.id, patch: patch as never } });
-      setLocal({});
-      toast.success(next ? `Slot ${u.slot} activated` : `Slot ${u.slot} deactivated`);
+      await updateFn({ data: { token, id: u.id, patch: { is_active: false } as never } });
+      toast.success(`Slot ${u.slot} stopped`);
       onChanged();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
     } finally {
-      setToggling(false);
+      setStopping(false);
     }
   }
 
@@ -423,9 +477,19 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
     setF("payment_methods", Array.from(cur));
   };
 
+  const step1State: "done" | "active" | "locked" = isVerified ? "done" : "active";
+  const step2State: "done" | "active" | "locked" = !isVerified
+    ? "locked"
+    : v.is_active
+      ? "done"
+      : "active";
+
+  const lockedFail = u.status === "invalid_creds" || u.status === "suspended";
+
   return (
-    <article className="rounded-2xl border border-border bg-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <article className="overflow-hidden rounded-2xl border border-border bg-card">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface/50 px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="grid size-9 place-items-center rounded-lg bg-surface-2 text-sm font-bold">
             {u.slot}
@@ -438,132 +502,187 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
           />
           <StatusPill status={v.status} msg={v.status_message} />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span className="text-[11px] text-muted-foreground">
             Grabs: <b className="text-foreground">{v.orders_grabbed}</b>
           </span>
-          <button
-            onClick={() => toggle(!v.is_active)}
-            disabled={toggling}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-              v.is_active
-                ? "bg-success text-success-foreground"
-                : "border border-border bg-surface text-foreground hover:bg-surface-2"
-            }`}
-          >
-            {toggling ? <Loader2 className="size-3.5 animate-spin" /> : <Power className="size-3.5" />}
-            {v.is_active ? "Active" : "Inactive"}
-          </button>
+          {v.is_active && (
+            <button
+              onClick={stop}
+              disabled={stopping}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-surface-2 disabled:opacity-60"
+            >
+              {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Power className="size-3.5" />}
+              Stop
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Field label="Username / Phone">
-          <input
-            value={v.username ?? ""}
-            onChange={(e) => setF("username", e.target.value)}
-            className={input}
-          />
-        </Field>
-        <Field label="Password">
-          <input
-            type="password"
-            value={v.password ?? ""}
-            onChange={(e) => setF("password", e.target.value)}
-            className={input}
-          />
-        </Field>
-        <Field label="Min price (SAR)">
-          <input
-            type="number"
-            value={v.min_price ?? 0}
-            onChange={(e) => setF("min_price", Number(e.target.value))}
-            className={input}
-          />
-        </Field>
-        <Field label="Max price (SAR)">
-          <input
-            type="number"
-            value={v.max_price ?? 0}
-            onChange={(e) => setF("max_price", Number(e.target.value))}
-            className={input}
-          />
-        </Field>
-        <Field label="Telegram Bot Token">
-          <input
-            value={v.telegram_bot_token ?? ""}
-            onChange={(e) => setF("telegram_bot_token", e.target.value)}
-            className={input}
-            placeholder="123456:ABC..."
-          />
-        </Field>
-        <Field label="Telegram Chat ID">
-          <input
-            value={v.telegram_chat_id ?? ""}
-            onChange={(e) => setF("telegram_chat_id", e.target.value)}
-            className={input}
-            placeholder="-1001234567890"
-          />
-        </Field>
-        <Field label="Polling interval (ms)">
-          <input
-            type="number"
-            min={200}
-            step={100}
-            value={v.polling_interval_ms ?? 1000}
-            onChange={(e) => setF("polling_interval_ms", Number(e.target.value))}
-            className={input}
-          />
-        </Field>
-        <Field label="Last poll">
-          <div className="rounded-md border border-border bg-input px-3 py-2 text-xs text-muted-foreground">
-            {v.last_polled_at ? new Date(v.last_polled_at).toLocaleTimeString() : "—"}
+      {/* Stepper */}
+      <div className="flex items-center gap-4 border-b border-border px-4 py-2.5">
+        <StepBadge n={1} state={step1State} label="Credentials" />
+        <div className="h-px flex-1 bg-border" />
+        <StepBadge n={2} state={step2State} label="Filters & Telegram" />
+      </div>
+
+      {/* Step 1 */}
+      <div className="px-4 py-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-semibold">Step 1 · Verify credentials</h3>
+          {isVerified && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success">
+              <CheckCircle2 className="size-3.5" /> Verified
+            </span>
+          )}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+          <Field label="Username / Phone">
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className={input}
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="Password">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={input}
+              autoComplete="off"
+            />
+          </Field>
+          <div className="flex items-end">
+            <button
+              onClick={verify}
+              disabled={verifying || (!credsDirty && isVerified)}
+              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50 sm:w-auto"
+            >
+              {verifying ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              {isVerified && !credsDirty ? "Re-verify" : "Activate / Verify"}
+            </button>
           </div>
-        </Field>
-      </div>
-
-      <div className="mt-4">
-        <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-          Payment methods
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {PAYMENTS.map((p) => {
-            const on = (v.payment_methods || []).includes(p);
-            return (
-              <button
-                key={p}
-                onClick={() => togglePay(p)}
-                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
-                  on
-                    ? "bg-primary text-primary-foreground"
-                    : "border border-border bg-surface text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {p}
-              </button>
-            );
-          })}
         </div>
+        {lockedFail && (
+          <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+            {v.status_message || (u.status === "invalid_creds" ? "Invalid Username or Password" : "No Permission / Account Suspended")}
+          </p>
+        )}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <button
-          onClick={tgTest}
-          disabled={testing}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60"
-        >
-          {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-          Test Telegram
-        </button>
-        <button
-          onClick={save}
-          disabled={!dirty || saving}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-        >
-          {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-          Save changes
-        </button>
-      </div>
+      {/* Step 2 — only when verified */}
+      {isVerified ? (
+        <div className="border-t border-border bg-surface/30 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Step 2 · Filters, Telegram & Polling</h3>
+            {v.is_active && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success">
+                <Activity className="size-3.5" /> Bot running
+              </span>
+            )}
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Min price (SAR)">
+              <input
+                type="number"
+                value={v.min_price ?? 0}
+                onChange={(e) => setF("min_price", Number(e.target.value))}
+                className={input}
+              />
+            </Field>
+            <Field label="Max price (SAR)">
+              <input
+                type="number"
+                value={v.max_price ?? 0}
+                onChange={(e) => setF("max_price", Number(e.target.value))}
+                className={input}
+              />
+            </Field>
+            <Field label="Polling interval (ms)">
+              <input
+                type="number"
+                min={200}
+                step={100}
+                value={v.polling_interval_ms ?? 1000}
+                onChange={(e) => setF("polling_interval_ms", Number(e.target.value))}
+                className={input}
+              />
+            </Field>
+            <Field label="Last poll">
+              <div className="rounded-md border border-border bg-input px-3 py-2 text-xs text-muted-foreground">
+                {v.last_polled_at ? new Date(v.last_polled_at).toLocaleTimeString() : "—"}
+              </div>
+            </Field>
+            <Field label="Telegram Bot Token">
+              <input
+                value={v.telegram_bot_token ?? ""}
+                onChange={(e) => setF("telegram_bot_token", e.target.value)}
+                className={input}
+                placeholder="123456:ABC..."
+              />
+            </Field>
+            <Field label="Telegram Chat ID">
+              <input
+                value={v.telegram_chat_id ?? ""}
+                onChange={(e) => setF("telegram_chat_id", e.target.value)}
+                className={input}
+                placeholder="-1001234567890"
+              />
+            </Field>
+          </div>
+
+          <div className="mt-4">
+            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Payment methods
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {PAYMENTS.map((p) => {
+                const on = (v.payment_methods || []).includes(p);
+                return (
+                  <button
+                    key={p}
+                    onClick={() => togglePay(p)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                      on
+                        ? "bg-primary text-primary-foreground"
+                        : "border border-border bg-surface text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+            <button
+              onClick={tgTest}
+              disabled={testing}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60"
+            >
+              {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+              Test Telegram
+            </button>
+            <button
+              onClick={saveAndStart}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
+              {v.is_active ? "Save configurations" : "Save configurations & start"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 border-t border-border bg-surface/30 px-4 py-4 text-xs text-muted-foreground">
+          <CircleDot className="size-3.5" />
+          Step 2 is locked. Verify the credentials above to unlock filters, Telegram and polling settings.
+        </div>
+      )}
     </article>
   );
 }
