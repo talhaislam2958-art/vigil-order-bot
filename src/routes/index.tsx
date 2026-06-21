@@ -471,6 +471,7 @@ function UserCard({
   const [testing, setTesting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setUsername(u.username ?? "");
