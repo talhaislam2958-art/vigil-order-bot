@@ -281,6 +281,44 @@ export const clearLogs = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const deleteUser = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z.object({ token: z.string().uuid(), id: z.string().uuid() }).parse(d),
+  )
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const supabaseAdmin = await getAdminClient();
+    const { data: row } = await supabaseAdmin
+      .from("bot_users")
+      .select("slot")
+      .eq("id", data.id)
+      .maybeSingle();
+    await supabaseAdmin
+      .from("bot_users")
+      .update({
+        label: "",
+        username: "",
+        password: "",
+        telegram_bot_token: "",
+        telegram_chat_id: "",
+        min_price: 0,
+        max_price: 999999,
+        payment_methods: [],
+        polling_interval_ms: 1000,
+        is_active: false,
+        auth_token: null,
+        auth_token_at: null,
+        status: "idle",
+        status_message: "",
+        seen_order_ids: [],
+        orders_grabbed: 0,
+        last_polled_at: null,
+      } as never)
+      .eq("id", data.id);
+    if (row?.slot) await supabaseAdmin.from("bot_logs").delete().eq("slot", row.slot);
+    return { ok: true };
+  });
+
 export const manualPoll = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ token: z.string().uuid() }).parse(d))
   .handler(async ({ data }) => {
