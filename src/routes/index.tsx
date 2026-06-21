@@ -617,6 +617,15 @@ function UserCard({
               Stop
             </button>
           )}
+          <button
+            onClick={del}
+            disabled={deleting}
+            title="Delete user / reset slot"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-destructive hover:bg-destructive/20 disabled:opacity-60"
+          >
+            {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+            Delete
+          </button>
         </div>
       </div>
 
