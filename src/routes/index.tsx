@@ -23,6 +23,7 @@ import {
   logoutMaster,
   listUsers,
   updateUser,
+  verifyUser,
   testTelegram,
   getLogs,
   manualPoll,
