@@ -40,7 +40,7 @@ export async function log(
       slot,
       level,
       message,
-      meta: meta ? (meta as object) : null,
+      meta: (meta ?? null) as never,
     });
   } catch (e) {
     console.error("log insert failed", e);
