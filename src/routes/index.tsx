@@ -564,6 +564,7 @@ function UserCard({
     }
   }
 
+  const setF = <K extends keyof BotUser>(k: K, val: BotUser[K]) =>
     setLocal((p) => ({ ...p, [k]: val }));
 
   const togglePay = (p: string) => {
