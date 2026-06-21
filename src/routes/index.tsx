@@ -79,6 +79,7 @@ function App() {
   const [token, setToken] = useState<string | null>(null);
   const [bootChecked, setBootChecked] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [theme, setTheme] = useTheme();
   const checkSetup = useServerFn(getSetupState);
 
   useEffect(() => {
@@ -100,7 +101,7 @@ function App() {
   if (!token) {
     return (
       <>
-        <Toaster theme="dark" position="top-right" />
+        <Toaster theme={theme} position="top-right" />
         <Gate
           needsSetup={needsSetup}
           onUnlocked={(t) => {
@@ -115,9 +116,11 @@ function App() {
 
   return (
     <>
-      <Toaster theme="dark" position="top-right" />
+      <Toaster theme={theme} position="top-right" />
       <Dashboard
         token={token}
+        theme={theme}
+        setTheme={setTheme}
         onLogout={() => {
           localStorage.removeItem(TOKEN_KEY);
           setToken(null);
