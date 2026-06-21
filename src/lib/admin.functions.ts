@@ -151,6 +151,81 @@ export const updateUser = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+export const verifyUser = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        token: z.string().uuid(),
+        id: z.string().uuid(),
+        username: z.string().min(1).max(200),
+        password: z.string().min(1).max(200),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const supabaseAdmin = await getAdminClient();
+    await supabaseAdmin
+      .from("bot_users")
+      .update({
+        username: data.username,
+        password: data.password,
+        is_active: false,
+        auth_token: null,
+        status: "starting",
+        status_message: "Verifying credentials...",
+      })
+      .eq("id", data.id);
+
+    let r: Response;
+    try {
+      r = await fetch("https://h5.parttime.mobi/prod-api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: data.username, password: data.password }),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Network error";
+      await supabaseAdmin
+        .from("bot_users")
+        .update({ status: "error", status_message: msg })
+        .eq("id", data.id);
+      return { ok: false as const, status: "error", message: msg };
+    }
+    const j = (await r.json().catch(() => ({}))) as { token?: string; code?: number; msg?: string };
+
+    if (j.token) {
+      await supabaseAdmin
+        .from("bot_users")
+        .update({
+          auth_token: j.token,
+          auth_token_at: new Date().toISOString(),
+          status: "authorized",
+          status_message: "Authorized — configure filters to start",
+        })
+        .eq("id", data.id);
+      const { log } = await import("./bot-engine.server");
+      await log(data.id, null, "success", "Credentials verified");
+      return { ok: true as const };
+    }
+
+    const m = (j.msg || "").toLowerCase();
+    let status = "error";
+    let status_message = j.msg || `HTTP ${r.status}`;
+    if (m.includes("password") || m.includes("user") || m.includes("account") || j.code === 500) {
+      status = "invalid_creds";
+      status_message = "Invalid Username or Password";
+    } else if (m.includes("ban") || m.includes("forbid") || m.includes("permission") || j.code === 403) {
+      status = "suspended";
+      status_message = "No Permission / Account Suspended";
+    }
+    await supabaseAdmin
+      .from("bot_users")
+      .update({ status, status_message })
+      .eq("id", data.id);
+    return { ok: false as const, status, message: status_message };
+  });
+
 export const testTelegram = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
     z
