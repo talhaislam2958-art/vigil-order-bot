@@ -49,6 +49,9 @@ export const Route = createFileRoute("/")({
 });
 
 const TOKEN_KEY = "orb_master_token";
+const THEME_KEY = "orb_theme";
+
+type Theme = "dark" | "light";
 
 const PAYMENT_OPTIONS: { key: string; label: string }[] = [
   { key: "stcpay", label: "STC Pay" },
@@ -56,6 +59,21 @@ const PAYMENT_OPTIONS: { key: string; label: string }[] = [
   { key: "barq", label: "Barq" },
   { key: "bank", label: "Banks" },
 ];
+
+function useTheme(): [Theme, (t: Theme) => void] {
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    const saved = (typeof window !== "undefined" && (localStorage.getItem(THEME_KEY) as Theme)) || "dark";
+    setTheme(saved);
+  }, []);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.toggle("light", theme === "light");
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+  return [theme, setTheme];
+}
 
 function App() {
   const [token, setToken] = useState<string | null>(null);
