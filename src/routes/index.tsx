@@ -857,11 +857,20 @@ function UserCard({
             Clear
           </button>
         </div>
-        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-lg p-2.5 text-[11px] leading-relaxed">
-          {logs.length === 0 ? (
+        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-md p-2.5 text-[11px] leading-relaxed">
+          {sim.length === 0 && logs.length === 0 ? (
             <p className="text-muted-foreground">// awaiting activity…</p>
           ) : (
-            logs.map((l) => <LogLine key={l.id} l={l} />)
+            <>
+              {sim.map((s, i) => (
+                <div key={`sim-${i}`} className="flex gap-2">
+                  <span className="shrink-0 text-muted-foreground">{s.t}</span>
+                  <span className="shrink-0 neon-text">[{u.slot}]</span>
+                  <span className="text-foreground/80">{s.msg}</span>
+                </div>
+              ))}
+              {logs.map((l) => <LogLine key={l.id} l={l} />)}
+            </>
           )}
         </div>
       </div>
