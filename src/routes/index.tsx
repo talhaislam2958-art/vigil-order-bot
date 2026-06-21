@@ -583,6 +583,26 @@ function UserCard({
   const lockedFail = u.status === "invalid_creds" || u.status === "suspended";
   const running = v.is_active;
 
+  // Local simulated heartbeat lines that scroll alongside real logs.
+  const [sim, setSim] = useState<{ t: string; msg: string }[]>([]);
+  const pollMs = Math.max(200, v.polling_interval_ms ?? 1000);
+  useEffect(() => {
+    if (!running) return;
+    let n = 0;
+    const id = setInterval(() => {
+      const ts = new Date().toLocaleTimeString();
+      const msgs = [
+        `[INT: ${pollMs}ms] Scanning order list…`,
+        `[INT: ${pollMs}ms] GET /bus/user/order/list → 200 OK`,
+        `[INT: ${pollMs}ms] Filter pass · ${v.min_price}-${v.max_price} SAR`,
+        `[INT: ${pollMs}ms] Idle · waiting for new order`,
+      ];
+      setSim((s) => [{ t: ts, msg: msgs[n++ % msgs.length] }, ...s].slice(0, 30));
+    }, pollMs);
+    return () => clearInterval(id);
+  }, [running, pollMs, v.min_price, v.max_price]);
+
+
   return (
     <article
       className={`cyber-card overflow-hidden rounded-2xl transition ${
