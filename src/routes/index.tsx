@@ -550,7 +550,20 @@ function UserCard({
     }
   }
 
-  const setF = <K extends keyof BotUser>(k: K, val: BotUser[K]) =>
+  async function del() {
+    if (typeof window !== "undefined" && !window.confirm(`Delete slot ${u.slot}? This stops polling and clears all credentials & filters.`)) return;
+    setDeleting(true);
+    try {
+      await deleteFn({ data: { token, id: u.id } });
+      toast.success(`Slot ${u.slot} reset`);
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
     setLocal((p) => ({ ...p, [k]: val }));
 
   const togglePay = (p: string) => {
