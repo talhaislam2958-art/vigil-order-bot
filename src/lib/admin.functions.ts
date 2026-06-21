@@ -132,7 +132,7 @@ export const updateUser = createServerFn({ method: "POST" })
       patch.status_message = "";
       patch.auth_token = null;
     }
-    const { error } = await supabaseAdmin.from("bot_users").update(patch).eq("id", data.id);
+    const { error } = await supabaseAdmin.from("bot_users").update(patch as never).eq("id", data.id);
     if (error) throw new Error(error.message);
 
     if (data.patch.is_active === true) {

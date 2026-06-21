@@ -208,7 +208,6 @@ export async function tickUser(u: BotUser): Promise<void> {
 
     const res = await receiveOrder(token, oid);
     if (res.ok) {
-      await supabaseAdmin.rpc("noop").catch(() => {});
       await supabaseAdmin
         .from("bot_users")
         .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
