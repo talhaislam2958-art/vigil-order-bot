@@ -14,7 +14,158 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      admin_sessions: {
+        Row: {
+          created_at: string
+          expires_at: string
+          token: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at?: string
+          token?: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          token?: string
+        }
+        Relationships: []
+      }
+      app_config: {
+        Row: {
+          created_at: string
+          id: number
+          master_password_hash: string | null
+          master_salt: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: number
+          master_password_hash?: string | null
+          master_salt?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: number
+          master_password_hash?: string | null
+          master_salt?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      bot_logs: {
+        Row: {
+          created_at: string
+          id: number
+          level: string
+          message: string
+          meta: Json | null
+          slot: number | null
+          user_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: never
+          level?: string
+          message: string
+          meta?: Json | null
+          slot?: number | null
+          user_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: never
+          level?: string
+          message?: string
+          meta?: Json | null
+          slot?: number | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "bot_logs_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "bot_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      bot_users: {
+        Row: {
+          auth_token: string | null
+          auth_token_at: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          label: string
+          last_polled_at: string | null
+          max_price: number
+          min_price: number
+          orders_grabbed: number
+          password: string
+          payment_methods: string[]
+          polling_interval_ms: number
+          seen_order_ids: string[]
+          slot: number
+          status: string
+          status_message: string
+          telegram_bot_token: string
+          telegram_chat_id: string
+          updated_at: string
+          username: string
+        }
+        Insert: {
+          auth_token?: string | null
+          auth_token_at?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string
+          last_polled_at?: string | null
+          max_price?: number
+          min_price?: number
+          orders_grabbed?: number
+          password?: string
+          payment_methods?: string[]
+          polling_interval_ms?: number
+          seen_order_ids?: string[]
+          slot: number
+          status?: string
+          status_message?: string
+          telegram_bot_token?: string
+          telegram_chat_id?: string
+          updated_at?: string
+          username?: string
+        }
+        Update: {
+          auth_token?: string | null
+          auth_token_at?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string
+          last_polled_at?: string | null
+          max_price?: number
+          min_price?: number
+          orders_grabbed?: number
+          password?: string
+          payment_methods?: string[]
+          polling_interval_ms?: number
+          seen_order_ids?: string[]
+          slot?: number
+          status?: string
+          status_message?: string
+          telegram_bot_token?: string
+          telegram_chat_id?: string
+          updated_at?: string
+          username?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
