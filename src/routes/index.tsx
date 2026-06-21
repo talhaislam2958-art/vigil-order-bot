@@ -8,14 +8,17 @@ import {
   CheckCircle2,
   CircleDot,
   Eraser,
+  Gauge,
   Loader2,
   LogOut,
-  Play,
+  Moon,
   Power,
   RefreshCw,
   Send,
   ShieldCheck,
+  Sun,
   Terminal,
+  Trash2,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -31,6 +34,7 @@ import {
   getLogs,
   clearLogs,
   manualPoll,
+  deleteUser,
 } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/")({
@@ -45,6 +49,9 @@ export const Route = createFileRoute("/")({
 });
 
 const TOKEN_KEY = "orb_master_token";
+const THEME_KEY = "orb_theme";
+
+type Theme = "dark" | "light";
 
 const PAYMENT_OPTIONS: { key: string; label: string }[] = [
   { key: "stcpay", label: "STC Pay" },
@@ -53,10 +60,26 @@ const PAYMENT_OPTIONS: { key: string; label: string }[] = [
   { key: "bank", label: "Banks" },
 ];
 
+function useTheme(): [Theme, (t: Theme) => void] {
+  const [theme, setTheme] = useState<Theme>("dark");
+  useEffect(() => {
+    const saved = (typeof window !== "undefined" && (localStorage.getItem(THEME_KEY) as Theme)) || "dark";
+    setTheme(saved);
+  }, []);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.classList.toggle("light", theme === "light");
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+  return [theme, setTheme];
+}
+
 function App() {
   const [token, setToken] = useState<string | null>(null);
   const [bootChecked, setBootChecked] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [theme, setTheme] = useTheme();
   const checkSetup = useServerFn(getSetupState);
 
   useEffect(() => {
@@ -78,7 +101,7 @@ function App() {
   if (!token) {
     return (
       <>
-        <Toaster theme="dark" position="top-right" />
+        <Toaster theme={theme} position="top-right" />
         <Gate
           needsSetup={needsSetup}
           onUnlocked={(t) => {
@@ -93,9 +116,11 @@ function App() {
 
   return (
     <>
-      <Toaster theme="dark" position="top-right" />
+      <Toaster theme={theme} position="top-right" />
       <Dashboard
         token={token}
+        theme={theme}
+        setTheme={setTheme}
         onLogout={() => {
           localStorage.removeItem(TOKEN_KEY);
           setToken(null);
@@ -200,7 +225,7 @@ function Gate({
 type BotUser = Awaited<ReturnType<typeof listUsers>>[number];
 type LogRow = Awaited<ReturnType<typeof getLogs>>[number];
 
-function Dashboard({ token, onLogout }: { token: string; onLogout: () => void }) {
+function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogout: () => void; theme: Theme; setTheme: (t: Theme) => void }) {
   const router = useRouter();
   const list = useServerFn(listUsers);
   const logoutFn = useServerFn(logoutMaster);
@@ -264,6 +289,14 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              title="Toggle theme"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider hover:bg-surface-2"
+            >
+              {theme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+              {theme === "dark" ? "Light" : "Dark"}
+            </button>
             <button
               onClick={async () => {
                 setPolling(true);
@@ -425,6 +458,7 @@ function UserCard({
   const verifyFn = useServerFn(verifyUser);
   const testFn = useServerFn(testTelegram);
   const clearFn = useServerFn(clearLogs);
+  const deleteFn = useServerFn(deleteUser);
 
   const isVerified = u.status === "authorized" || u.status === "running" || !!u.auth_token_at;
 
@@ -437,6 +471,7 @@ function UserCard({
   const [testing, setTesting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setUsername(u.username ?? "");
@@ -515,6 +550,20 @@ function UserCard({
     }
   }
 
+  async function del() {
+    if (typeof window !== "undefined" && !window.confirm(`Delete slot ${u.slot}? This stops polling and clears all credentials & filters.`)) return;
+    setDeleting(true);
+    try {
+      await deleteFn({ data: { token, id: u.id } });
+      toast.success(`Slot ${u.slot} reset`);
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const setF = <K extends keyof BotUser>(k: K, val: BotUser[K]) =>
     setLocal((p) => ({ ...p, [k]: val }));
 
@@ -533,6 +582,26 @@ function UserCard({
 
   const lockedFail = u.status === "invalid_creds" || u.status === "suspended";
   const running = v.is_active;
+
+  // Local simulated heartbeat lines that scroll alongside real logs.
+  const [sim, setSim] = useState<{ t: string; msg: string }[]>([]);
+  const pollMs = Math.max(200, v.polling_interval_ms ?? 1000);
+  useEffect(() => {
+    if (!running) return;
+    let n = 0;
+    const id = setInterval(() => {
+      const ts = new Date().toLocaleTimeString();
+      const msgs = [
+        `[INT: ${pollMs}ms] Scanning order list…`,
+        `[INT: ${pollMs}ms] GET /bus/user/order/list → 200 OK`,
+        `[INT: ${pollMs}ms] Filter pass · ${v.min_price}-${v.max_price} SAR`,
+        `[INT: ${pollMs}ms] Idle · waiting for new order`,
+      ];
+      setSim((s) => [{ t: ts, msg: msgs[n++ % msgs.length] }, ...s].slice(0, 30));
+    }, pollMs);
+    return () => clearInterval(id);
+  }, [running, pollMs, v.min_price, v.max_price]);
+
 
   return (
     <article
@@ -568,6 +637,15 @@ function UserCard({
               Stop
             </button>
           )}
+          <button
+            onClick={del}
+            disabled={deleting}
+            title="Delete user / reset slot"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-destructive hover:bg-destructive/20 disabled:opacity-60"
+          >
+            {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+            Delete
+          </button>
         </div>
       </div>
 
@@ -657,17 +735,35 @@ function UserCard({
                 className={input}
               />
             </Field>
-            <Field label="API polling interval (sec)">
+            <Field label="Interval (seconds)">
               <input
                 type="number"
-                min={1}
+                min={0}
                 step={1}
-                value={intervalSec}
-                onChange={(e) =>
-                  setF("polling_interval_ms", Math.max(200, Math.round(Number(e.target.value) * 1000)))
-                }
+                value={Math.floor(intervalSec)}
+                onChange={(e) => {
+                  const sec = Math.max(0, Math.floor(Number(e.target.value) || 0));
+                  const msPart = (v.polling_interval_ms ?? 1000) % 1000;
+                  setF("polling_interval_ms", Math.max(200, sec * 1000 + msPart));
+                }}
                 className={input}
               />
+            </Field>
+            <Field label="Polling INT (ms)">
+              <div className="relative">
+                <Gauge className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="number"
+                  min={200}
+                  step={50}
+                  value={v.polling_interval_ms ?? 1000}
+                  onChange={(e) =>
+                    setF("polling_interval_ms", Math.max(200, Math.min(60000, Math.round(Number(e.target.value) || 0))))
+                  }
+                  className={input + " pl-7"}
+                  placeholder="e.g. 500"
+                />
+              </div>
             </Field>
             <Field label="Last poll">
               <div className="rounded-md border border-border bg-input px-3 py-2 font-mono text-xs text-muted-foreground">
@@ -761,11 +857,20 @@ function UserCard({
             Clear
           </button>
         </div>
-        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-lg p-2.5 text-[11px] leading-relaxed">
-          {logs.length === 0 ? (
+        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-md p-2.5 text-[11px] leading-relaxed">
+          {sim.length === 0 && logs.length === 0 ? (
             <p className="text-muted-foreground">// awaiting activity…</p>
           ) : (
-            logs.map((l) => <LogLine key={l.id} l={l} />)
+            <>
+              {sim.map((s, i) => (
+                <div key={`sim-${i}`} className="flex gap-2">
+                  <span className="shrink-0 text-muted-foreground">{s.t}</span>
+                  <span className="shrink-0 neon-text">[{u.slot}]</span>
+                  <span className="text-foreground/80">{s.msg}</span>
+                </div>
+              ))}
+              {logs.map((l) => <LogLine key={l.id} l={l} />)}
+            </>
           )}
         </div>
       </div>
