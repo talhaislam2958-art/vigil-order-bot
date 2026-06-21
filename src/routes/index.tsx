@@ -7,6 +7,7 @@ import {
   Bot,
   CheckCircle2,
   CircleDot,
+  Eraser,
   Loader2,
   LogOut,
   Play,
@@ -14,7 +15,9 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Terminal,
   XCircle,
+  Zap,
 } from "lucide-react";
 import {
   getSetupState,
@@ -26,14 +29,15 @@ import {
   verifyUser,
   testTelegram,
   getLogs,
+  clearLogs,
   manualPoll,
 } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Order Receiver Bot — Control Center" },
-      { name: "description", content: "Multi-user automatic order receiver dashboard with 24/7 polling, Telegram alerts, and per-user filters." },
+      { title: "Order Receiver Bot — Cyber Control Center" },
+      { name: "description", content: "Multi-user 24/7 order receiver bot dashboard with neon cyber UI and Telegram alerts." },
       { name: "robots", content: "noindex,nofollow" },
     ],
   }),
@@ -41,6 +45,13 @@ export const Route = createFileRoute("/")({
 });
 
 const TOKEN_KEY = "orb_master_token";
+
+const PAYMENT_OPTIONS: { key: string; label: string }[] = [
+  { key: "stcpay", label: "STC Pay" },
+  { key: "urpay", label: "Urpay" },
+  { key: "barq", label: "Barq" },
+  { key: "bank", label: "Banks" },
+];
 
 function App() {
   const [token, setToken] = useState<string | null>(null);
@@ -59,7 +70,7 @@ function App() {
   if (!bootChecked) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        <Loader2 className="size-6 animate-spin neon-text" />
       </div>
     );
   }
@@ -136,20 +147,20 @@ function Gate({
     <div className="flex min-h-screen items-center justify-center px-4">
       <form
         onSubmit={submit}
-        className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-2xl"
+        className="cyber-card w-full max-w-sm rounded-2xl p-8"
       >
         <div className="mb-6 flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
-            <ShieldCheck className="size-5" />
+          <div className="neon-border grid size-11 place-items-center rounded-xl bg-background">
+            <ShieldCheck className="size-5 neon-text" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold">Order Receiver Bot</h1>
-            <p className="text-xs text-muted-foreground">
-              {needsSetup ? "Set master access code" : "Enter master access code"}
+            <h1 className="text-base font-bold tracking-wide neon-text">ORDER RECEIVER // BOT</h1>
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
+              {needsSetup ? "Initialize master code" : "Master access required"}
             </p>
           </div>
         </div>
-        <label className="mb-3 block text-xs font-medium text-muted-foreground">
+        <label className="mb-2 block text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
           Master code
         </label>
         <input
@@ -157,29 +168,29 @@ function Gate({
           type="password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
-          className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+          className="w-full rounded-lg border border-border bg-input px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
           placeholder="••••••••"
         />
         {needsSetup && (
           <>
-            <label className="mt-4 mb-3 block text-xs font-medium text-muted-foreground">
+            <label className="mt-4 mb-2 block text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
               Confirm code
             </label>
             <input
               type="password"
               value={pw2}
               onChange={(e) => setPw2(e.target.value)}
-              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring"
               placeholder="••••••••"
             />
           </>
         )}
         <button
           disabled={busy}
-          className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
+          className="neon-border mt-6 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-bold uppercase tracking-wider text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-          {needsSetup ? "Set code" : "Unlock"}
+          {needsSetup ? "Initialize" : "Unlock"}
         </button>
       </form>
     </div>
@@ -188,8 +199,6 @@ function Gate({
 
 type BotUser = Awaited<ReturnType<typeof listUsers>>[number];
 type LogRow = Awaited<ReturnType<typeof getLogs>>[number];
-
-const PAYMENTS = ["stcpay", "urpay", "barq", "applepay", "mada", "bank"];
 
 function Dashboard({ token, onLogout }: { token: string; onLogout: () => void }) {
   const router = useRouter();
@@ -204,7 +213,10 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
 
   async function refresh() {
     try {
-      const [u, l] = await Promise.all([list({ data: { token } }), getLogsFn({ data: { token, limit: 80 } })]);
+      const [u, l] = await Promise.all([
+        list({ data: { token } }),
+        getLogsFn({ data: { token, limit: 200 } }),
+      ]);
       setUsers(u);
       setLogs(l);
     } catch (e) {
@@ -229,16 +241,25 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
+      <header className="sticky top-0 z-10 border-b border-border/60 bg-background/70 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground">
-              <Bot className="size-5" />
+            <div className="neon-border grid size-10 place-items-center rounded-xl bg-background">
+              <Bot className="size-5 neon-text" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold leading-tight">Order Receiver Bot</h1>
-              <p className="text-xs text-muted-foreground">
-                {activeCount} active · {totalGrabs} grabs total
+              <h1 className="text-sm font-bold uppercase tracking-widest neon-text">
+                Order Receiver // 24/7
+              </h1>
+              <p className="text-[11px] font-mono text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="pulse-dot inline-block size-1.5 rounded-full bg-[var(--neon)]" />
+                  CLOUD ENGINE ONLINE
+                </span>
+                {" · "}
+                <span className="text-foreground">{activeCount}</span> active
+                {" · "}
+                <span className="text-foreground">{totalGrabs}</span> grabs
               </p>
             </div>
           </div>
@@ -248,7 +269,7 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
                 setPolling(true);
                 try {
                   const r = await pollFn({ data: { token } });
-                  toast.success(`Manual poll done · ${r.ticked} ticks`);
+                  toast.success(`Manual poll · ${r.ticked} ticks`);
                   await refresh();
                 } catch (e) {
                   toast.error(e instanceof Error ? e.message : "Failed");
@@ -256,14 +277,14 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
                   setPolling(false);
                 }
               }}
-              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider hover:bg-surface-2"
             >
-              {polling ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-              Run cycle now
+              {polling ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5 neon-text" />}
+              Run cycle
             </button>
             <button
               onClick={() => router.invalidate().then(refresh)}
-              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider hover:bg-surface-2"
             >
               <RefreshCw className="size-3.5" />
               Refresh
@@ -273,7 +294,7 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
                 await logoutFn({ data: { token } }).catch(() => {});
                 onLogout();
               }}
-              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-xs font-semibold uppercase tracking-wider hover:bg-surface-2"
             >
               <LogOut className="size-3.5" />
               Lock
@@ -282,53 +303,71 @@ function Dashboard({ token, onLogout }: { token: string; onLogout: () => void })
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[1fr_320px]">
-        <section className="space-y-3">
+      <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[1fr_340px]">
+        <section className="space-y-4">
           {loading && users.length === 0 ? (
             <div className="flex h-40 items-center justify-center text-muted-foreground">
               <Loader2 className="size-5 animate-spin" />
             </div>
           ) : (
-            users.map((u) => <UserCard key={u.id} u={u} token={token} onChanged={refresh} />)
+            users.map((u) => (
+              <UserCard
+                key={u.id}
+                u={u}
+                token={token}
+                logs={logs.filter((l) => l.slot === u.slot).slice(0, 12)}
+                onChanged={refresh}
+              />
+            ))
           )}
         </section>
 
-        <aside className="space-y-3">
-          <div className="rounded-2xl border border-border bg-card p-4">
-            <div className="mb-3 flex items-center gap-2">
-              <Activity className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold">Live activity</h2>
+        <aside className="space-y-3 lg:sticky lg:top-20 lg:self-start">
+          <div className="cyber-card rounded-2xl p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="size-4 neon-text" />
+                <h2 className="text-xs font-bold uppercase tracking-widest">Global Activity</h2>
+              </div>
+              <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
             </div>
-            <div className="max-h-[70vh] space-y-2 overflow-y-auto pr-1 font-mono text-[11px]">
-              {logs.length === 0 && <p className="text-muted-foreground">No activity yet.</p>}
+            <div className="terminal max-h-[60vh] space-y-1 overflow-y-auto rounded-lg p-3 text-[11px]">
+              {logs.length === 0 && <p className="text-muted-foreground">// no activity yet</p>}
               {logs.map((l) => (
-                <div key={l.id} className="flex gap-2">
-                  <span className="shrink-0 text-muted-foreground">
-                    {new Date(l.created_at).toLocaleTimeString()}
-                  </span>
-                  <span
-                    className={
-                      l.level === "error"
-                        ? "text-destructive"
-                        : l.level === "success"
-                          ? "text-success"
-                          : l.level === "warn"
-                            ? "text-warning"
-                            : "text-foreground"
-                    }
-                  >
-                    [{l.slot ?? "-"}] {l.message}
-                  </span>
-                </div>
+                <LogLine key={l.id} l={l} />
               ))}
             </div>
           </div>
-          <div className="rounded-2xl border border-border bg-card p-4 text-xs text-muted-foreground">
-            <p className="font-semibold text-foreground">Cron status</p>
-            <p className="mt-1">Server-side polling runs every ~10s via cron. Per-user interval governs in-cycle request pacing.</p>
+          <div className="rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
+            <p className="font-bold uppercase tracking-widest text-foreground">⚡ 24/7 Cloud Engine</p>
+            <p className="mt-1 font-mono">
+              Runs on Lovable's built-in cloud (Edge + scheduled jobs every ~10s). Keeps running when your browser is closed.
+            </p>
           </div>
         </aside>
       </main>
+    </div>
+  );
+}
+
+function LogLine({ l }: { l: LogRow }) {
+  const color =
+    l.level === "error"
+      ? "text-[var(--neon-red)]"
+      : l.level === "success"
+        ? "text-[var(--neon)]"
+        : l.level === "warn"
+          ? "text-[var(--warning)]"
+          : "text-foreground/90";
+  return (
+    <div className="flex gap-2">
+      <span className="shrink-0 text-muted-foreground">
+        {new Date(l.created_at).toLocaleTimeString()}
+      </span>
+      <span className={`shrink-0 ${color}`}>
+        [{l.slot ?? "·"}]
+      </span>
+      <span className={color}>{l.message}</span>
     </div>
   );
 }
@@ -337,15 +376,15 @@ function StatusPill({ status, msg }: { status: string; msg: string }) {
   const map: Record<string, { c: string; label: string; Icon: React.ComponentType<{ className?: string }> }> = {
     idle: { c: "bg-muted text-muted-foreground", label: "Not configured", Icon: CircleDot },
     starting: { c: "bg-warning/20 text-warning", label: "Verifying…", Icon: Loader2 },
-    authorized: { c: "bg-success/15 text-success", label: "Authorized — idle", Icon: ShieldCheck },
-    running: { c: "bg-success/20 text-success", label: "Authorized / Running", Icon: CheckCircle2 },
-    invalid_creds: { c: "bg-destructive/20 text-destructive", label: "Invalid Username or Password", Icon: XCircle },
-    suspended: { c: "bg-destructive/20 text-destructive", label: "No Permission / Account Suspended", Icon: XCircle },
+    authorized: { c: "bg-success/15 text-success", label: "Authorized · idle", Icon: ShieldCheck },
+    running: { c: "bg-[var(--neon)]/15 text-[var(--neon)] neon-border", label: "RUNNING", Icon: CheckCircle2 },
+    invalid_creds: { c: "bg-destructive/20 text-destructive neon-red-border", label: "Invalid credentials", Icon: XCircle },
+    suspended: { c: "bg-destructive/20 text-destructive neon-red-border", label: "Suspended", Icon: XCircle },
     error: { c: "bg-destructive/20 text-destructive", label: msg || "Error", Icon: XCircle },
   };
   const s = map[status] ?? map.idle;
   return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ${s.c}`}>
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest ${s.c}`}>
       <s.Icon className={`size-3 ${status === "starting" ? "animate-spin" : ""}`} />
       {s.label}
     </span>
@@ -355,41 +394,50 @@ function StatusPill({ status, msg }: { status: string; msg: string }) {
 function StepBadge({ n, state, label }: { n: number; state: "done" | "active" | "locked"; label: string }) {
   const styles =
     state === "done"
-      ? "bg-success text-success-foreground border-success"
+      ? "bg-[var(--neon)] text-primary-foreground border-[var(--neon)]"
       : state === "active"
-        ? "bg-primary text-primary-foreground border-primary"
+        ? "bg-background text-[var(--neon)] neon-border"
         : "bg-surface text-muted-foreground border-border";
   return (
     <div className="flex items-center gap-2">
       <div className={`grid size-6 place-items-center rounded-full border text-[11px] font-bold ${styles}`}>
         {state === "done" ? <CheckCircle2 className="size-3.5" /> : n}
       </div>
-      <span className={`text-xs font-medium ${state === "locked" ? "text-muted-foreground" : "text-foreground"}`}>
+      <span className={`text-[10px] font-bold uppercase tracking-widest ${state === "locked" ? "text-muted-foreground" : "text-foreground"}`}>
         {label}
       </span>
     </div>
   );
 }
 
-function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChanged: () => void }) {
+function UserCard({
+  u,
+  token,
+  logs,
+  onChanged,
+}: {
+  u: BotUser;
+  token: string;
+  logs: LogRow[];
+  onChanged: () => void;
+}) {
   const updateFn = useServerFn(updateUser);
   const verifyFn = useServerFn(verifyUser);
   const testFn = useServerFn(testTelegram);
+  const clearFn = useServerFn(clearLogs);
 
   const isVerified = u.status === "authorized" || u.status === "running" || !!u.auth_token_at;
 
-  // Step 1 local state — credentials only
   const [username, setUsername] = useState(u.username ?? "");
   const [password, setPassword] = useState(u.password ?? "");
   const [verifying, setVerifying] = useState(false);
 
-  // Step 2 local state — advanced config
   const [local, setLocal] = useState<Partial<BotUser>>({});
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
-  // Reset local on slot identity change
   useEffect(() => {
     setUsername(u.username ?? "");
     setPassword(u.password ?? "");
@@ -397,22 +445,15 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
   }, [u.id, u.username, u.password]);
 
   const v = { ...u, ...local };
-
   const credsDirty = username !== (u.username ?? "") || password !== (u.password ?? "");
 
   async function verify() {
-    if (!username.trim() || !password.trim()) {
-      toast.error("Enter username and password");
-      return;
-    }
+    if (!username.trim() || !password.trim()) return toast.error("Enter username and password");
     setVerifying(true);
     try {
       const r = await verifyFn({ data: { token, id: u.id, username: username.trim(), password } });
-      if (r.ok) {
-        toast.success(`Slot ${u.slot} authorized`);
-      } else {
-        toast.error(r.message || "Verification failed");
-      }
+      if (r.ok) toast.success(`Slot ${u.slot} authorized`);
+      else toast.error(r.message || "Verification failed");
       onChanged();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -427,7 +468,7 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
       const patch: Record<string, unknown> = { ...local, is_active: true };
       await updateFn({ data: { token, id: u.id, patch: patch as never } });
       setLocal({});
-      toast.success(`Slot ${u.slot} configurations saved · bot running`);
+      toast.success(`Slot ${u.slot} live · grabbing orders`);
       onChanged();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed");
@@ -450,20 +491,27 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
   }
 
   async function tgTest() {
-    if (!v.telegram_bot_token || !v.telegram_chat_id) {
-      toast.error("Set bot token and chat id first");
-      return;
-    }
+    if (!v.telegram_bot_token || !v.telegram_chat_id) return toast.error("Set bot token and chat id first");
     setTesting(true);
     try {
-      await testFn({
-        data: { token, bot_token: v.telegram_bot_token, chat_id: v.telegram_chat_id },
-      });
+      await testFn({ data: { token, bot_token: v.telegram_bot_token, chat_id: v.telegram_chat_id } });
       toast.success("Telegram test sent");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Telegram failed");
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function clearMyLogs() {
+    setClearing(true);
+    try {
+      await clearFn({ data: { token, slot: u.slot } });
+      onChanged();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -477,40 +525,44 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
     setF("payment_methods", Array.from(cur));
   };
 
+  // Polling interval stored as ms; displayed/edited in seconds
+  const intervalSec = (v.polling_interval_ms ?? 1000) / 1000;
+
   const step1State: "done" | "active" | "locked" = isVerified ? "done" : "active";
-  const step2State: "done" | "active" | "locked" = !isVerified
-    ? "locked"
-    : v.is_active
-      ? "done"
-      : "active";
+  const step2State: "done" | "active" | "locked" = !isVerified ? "locked" : v.is_active ? "done" : "active";
 
   const lockedFail = u.status === "invalid_creds" || u.status === "suspended";
+  const running = v.is_active;
 
   return (
-    <article className="overflow-hidden rounded-2xl border border-border bg-card">
+    <article
+      className={`cyber-card overflow-hidden rounded-2xl transition ${
+        running ? "neon-border" : lockedFail ? "neon-red-border" : ""
+      }`}
+    >
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-surface/50 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-surface/40 px-4 py-3">
         <div className="flex items-center gap-3">
-          <div className="grid size-9 place-items-center rounded-lg bg-surface-2 text-sm font-bold">
-            {u.slot}
+          <div className="grid size-9 place-items-center rounded-lg border border-border bg-background font-mono text-sm font-bold neon-text">
+            {String(u.slot).padStart(2, "0")}
           </div>
           <input
             value={v.label ?? ""}
             onChange={(e) => setF("label", e.target.value)}
-            placeholder={`Slot ${u.slot} label`}
-            className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-semibold hover:border-border focus:border-border focus:outline-none"
+            placeholder={`USER-${u.slot}`}
+            className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-bold tracking-wide hover:border-border focus:border-border focus:outline-none"
           />
           <StatusPill status={v.status} msg={v.status_message} />
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] text-muted-foreground">
-            Grabs: <b className="text-foreground">{v.orders_grabbed}</b>
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            Grabs <b className="neon-text">{v.orders_grabbed}</b>
           </span>
-          {v.is_active && (
+          {running && (
             <button
               onClick={stop}
               disabled={stopping}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-surface-2 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider hover:bg-surface-2 disabled:opacity-60"
             >
               {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Power className="size-3.5" />}
               Stop
@@ -520,18 +572,20 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
       </div>
 
       {/* Stepper */}
-      <div className="flex items-center gap-4 border-b border-border px-4 py-2.5">
+      <div className="flex items-center gap-4 border-b border-border/60 px-4 py-2.5">
         <StepBadge n={1} state={step1State} label="Credentials" />
-        <div className="h-px flex-1 bg-border" />
+        <div className="h-px flex-1 bg-border/60" />
         <StepBadge n={2} state={step2State} label="Filters & Telegram" />
       </div>
 
       {/* Step 1 */}
       <div className="px-4 py-4">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Step 1 · Verify credentials</h3>
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+            Step 1 · Verify credentials
+          </h3>
           {isVerified && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success">
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest neon-text">
               <CheckCircle2 className="size-3.5" /> Verified
             </span>
           )}
@@ -558,28 +612,30 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
             <button
               onClick={verify}
               disabled={verifying || (!credsDirty && isVerified)}
-              className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50 sm:w-auto"
+              className="neon-border inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 text-xs font-bold uppercase tracking-wider text-primary-foreground transition hover:opacity-90 disabled:opacity-50 sm:w-auto"
             >
               {verifying ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
-              {isVerified && !credsDirty ? "Re-verify" : "Activate / Verify"}
+              {isVerified && !credsDirty ? "Re-verify" : "Activate"}
             </button>
           </div>
         </div>
         {lockedFail && (
-          <p className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+          <p className="neon-red-border mt-3 rounded-md bg-destructive/10 px-3 py-2 text-xs font-bold uppercase tracking-wider neon-red-text">
             {v.status_message || (u.status === "invalid_creds" ? "Invalid Username or Password" : "No Permission / Account Suspended")}
           </p>
         )}
       </div>
 
-      {/* Step 2 — only when verified */}
+      {/* Step 2 */}
       {isVerified ? (
-        <div className="border-t border-border bg-surface/30 px-4 py-4">
+        <div className="border-t border-border/60 bg-surface/20 px-4 py-4">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-semibold">Step 2 · Filters, Telegram & Polling</h3>
-            {v.is_active && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success">
-                <Activity className="size-3.5" /> Bot running
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">
+              Step 2 · Filters · Polling · Telegram
+            </h3>
+            {running && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest neon-text">
+                <Activity className="size-3.5" /> Loop active
               </span>
             )}
           </div>
@@ -601,18 +657,20 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
                 className={input}
               />
             </Field>
-            <Field label="Polling interval (ms)">
+            <Field label="API polling interval (sec)">
               <input
                 type="number"
-                min={200}
-                step={100}
-                value={v.polling_interval_ms ?? 1000}
-                onChange={(e) => setF("polling_interval_ms", Number(e.target.value))}
+                min={1}
+                step={1}
+                value={intervalSec}
+                onChange={(e) =>
+                  setF("polling_interval_ms", Math.max(200, Math.round(Number(e.target.value) * 1000)))
+                }
                 className={input}
               />
             </Field>
             <Field label="Last poll">
-              <div className="rounded-md border border-border bg-input px-3 py-2 text-xs text-muted-foreground">
+              <div className="rounded-md border border-border bg-input px-3 py-2 font-mono text-xs text-muted-foreground">
                 {v.last_polled_at ? new Date(v.last_polled_at).toLocaleTimeString() : "—"}
               </div>
             </Field>
@@ -635,23 +693,23 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
           </div>
 
           <div className="mt-4">
-            <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
               Payment methods
             </p>
             <div className="flex flex-wrap gap-2">
-              {PAYMENTS.map((p) => {
-                const on = (v.payment_methods || []).includes(p);
+              {PAYMENT_OPTIONS.map((p) => {
+                const on = (v.payment_methods || []).includes(p.key);
                 return (
                   <button
-                    key={p}
-                    onClick={() => togglePay(p)}
-                    className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                    key={p.key}
+                    onClick={() => togglePay(p.key)}
+                    className={`rounded-lg border px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
                       on
-                        ? "bg-primary text-primary-foreground"
-                        : "border border-border bg-surface text-muted-foreground hover:text-foreground"
+                        ? "neon-border bg-[var(--neon)]/10 neon-text"
+                        : "border-border bg-surface text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    {p}
+                    {on ? "☑" : "☐"} {p.label}
                   </button>
                 );
               })}
@@ -662,7 +720,7 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
             <button
               onClick={tgTest}
               disabled={testing}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider hover:bg-surface-2 disabled:opacity-60"
             >
               {testing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
               Test Telegram
@@ -670,30 +728,58 @@ function UserCard({ u, token, onChanged }: { u: BotUser; token: string; onChange
             <button
               onClick={saveAndStart}
               disabled={saving}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              className="neon-border inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-[11px] font-bold uppercase tracking-wider text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
             >
               {saving ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />}
-              {v.is_active ? "Save configurations" : "Save configurations & start"}
+              {running ? "Save configs" : "Save & start loop"}
             </button>
           </div>
         </div>
       ) : (
-        <div className="flex items-center gap-2 border-t border-border bg-surface/30 px-4 py-4 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 border-t border-border/60 bg-surface/20 px-4 py-4 text-xs text-muted-foreground">
           <CircleDot className="size-3.5" />
-          Step 2 is locked. Verify the credentials above to unlock filters, Telegram and polling settings.
+          Step 2 locked. Verify credentials above to unlock filters, Telegram and polling.
         </div>
       )}
+
+      {/* Mini live terminal */}
+      <div className="border-t border-border/60 bg-background/40 px-4 py-3">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Terminal className="size-3.5 neon-text" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Live terminal · slot {u.slot}
+            </span>
+            {running && <span className="pulse-dot inline-block size-1.5 rounded-full bg-[var(--neon)]" />}
+          </div>
+          <button
+            onClick={clearMyLogs}
+            disabled={clearing}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground disabled:opacity-60"
+          >
+            {clearing ? <Loader2 className="size-3 animate-spin" /> : <Eraser className="size-3" />}
+            Clear
+          </button>
+        </div>
+        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-lg p-2.5 text-[11px] leading-relaxed">
+          {logs.length === 0 ? (
+            <p className="text-muted-foreground">// awaiting activity…</p>
+          ) : (
+            logs.map((l) => <LogLine key={l.id} l={l} />)
+          )}
+        </div>
+      </div>
     </article>
   );
 }
 
 const input =
-  "w-full rounded-md border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
+  "w-full rounded-md border border-border bg-input px-3 py-2 font-mono text-sm outline-none focus:ring-2 focus:ring-ring";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
         {label}
       </span>
       {children}
