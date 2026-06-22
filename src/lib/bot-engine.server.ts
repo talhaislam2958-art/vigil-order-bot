@@ -132,11 +132,25 @@ const MOBILE_HEADERS = {
 const cleanCycleJitterMs = () => 1000 + Math.floor(Math.random() * 801);
 let globalRateLimitCooldownUntil = 0;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function hasTooManyRequests(payload: unknown, error?: string): boolean {
   const haystack = [error, typeof payload === "string" ? payload : JSON.stringify(payload ?? {})]
     .filter(Boolean)
     .join(" ");
   return haystack.includes("Too many requests");
+}
+
+async function applyRateLimitCooldown(u: BotUser): Promise<void> {
+  globalRateLimitCooldownUntil = Date.now() + 4000;
+  await setStatus(u.id, "cooldown", "Rate limit cooldown active");
+  await log(u.id, u.slot, "warn", "[ANTI-BAN]: Rate limit hit, cooling down 4s...");
+  await sleep(4000);
+}
+
+async function waitForGlobalCooldown(): Promise<void> {
+  const waitMs = globalRateLimitCooldownUntil - Date.now();
+  if (waitMs > 0) await sleep(waitMs);
 }
 
 async function getOrderList(
