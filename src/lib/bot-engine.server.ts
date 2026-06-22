@@ -297,7 +297,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     return raw || "Unknown";
   };
 
-  for (const o of list.rows) {
+  for (const o of orders) {
     const oid = pickOrderId(o);
     if (!oid || seen.has(oid)) continue;
     newSeen.push(oid);
@@ -322,8 +322,9 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    // INSTANT GRAB: fire receive without awaiting, handle result async to win race
+    // INSTANT GRAB: fire receive before any detection log/notification work to win the race
     const grabPromise = receiveOrder(token, oid);
+    await log(u.id, u.slot, "success", "[DETECTION]: Order found, initiating immediate grab!");
     void grabPromise.then(async (res) => {
       if (res.ok) {
         await supabaseAdmin
@@ -374,7 +375,7 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
       const sleep = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-      await new Promise((r) => setTimeout(r, sleep));
+        await sleep(sleepMs);
       continue;
     }
     await Promise.all(
@@ -385,7 +386,7 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
           await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
         }
         ticks++;
-        s.nextAt = Date.now() + Math.max(200, s.u.polling_interval_ms);
+        s.nextAt = Date.now() + cleanCycleJitterMs();
       }),
     );
   }
