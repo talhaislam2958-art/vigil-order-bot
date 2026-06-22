@@ -231,6 +231,7 @@ async function receiveOrder(token: string, orderId: string) {
 
 /** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
 export async function tickUser(u: BotUser): Promise<void> {
+  await waitForGlobalCooldown();
   let token = u.auth_token;
   if (!token) {
     token = await loginUser(u);
@@ -244,9 +245,8 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (!token) return;
     list = await getOrderList(token);
   }
-  // Fail-safe bypass: HTTP 500 (or transport error) → silent 800ms cooldown + one retry
-  if (list.status === 500 || list.status === 0 || list.status === 502 || list.status === 503) {
-    await new Promise((r) => setTimeout(r, 800));
+  if (list.rateLimited || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
+    await applyRateLimitCooldown(u);
     list = await getOrderList(token);
   }
   if (list.status !== 200) {
@@ -260,16 +260,14 @@ export async function tickUser(u: BotUser): Promise<void> {
     .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
     .eq("id", u.id);
 
-  // DIAGNOSTIC: dump raw payload when no rows extracted, so we can see alt key names
-  if (list.rows.length === 0) {
+  if (list.orders.length === 0) {
     const dump = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw);
     console.log("[ORDER-LIST RAW]", dump);
     await log(u.id, u.slot, "info", `[RAW PAYLOAD] ${(dump || "").slice(0, 500)}`);
     return;
   }
 
-  // HIGH-VISIBILITY: detection event
-  await log(u.id, u.slot, "success", `[DETECTION]: ${list.rows.length} order(s) found, initiating immediate grab!`);
+  const orders = list.orders;
 
   const seen = new Set(u.seen_order_ids || []);
   // Normalize filter aliases → tokens to match loosely against payment strings
