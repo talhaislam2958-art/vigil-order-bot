@@ -129,6 +129,35 @@ const MOBILE_HEADERS = {
   "X-Requested-With": "com.application.package",
 };
 
+function extractRows(j: unknown): OrderRow[] {
+  if (!j || typeof j !== "object") return [];
+  const obj = j as Record<string, unknown>;
+  // Try common keys in priority order
+  const candidates = [
+    obj.rows,
+    obj.data,
+    obj.list,
+    obj.orders,
+    obj.result,
+    obj.records,
+    obj.items,
+    (obj.data as Record<string, unknown> | undefined)?.rows,
+    (obj.data as Record<string, unknown> | undefined)?.list,
+    (obj.data as Record<string, unknown> | undefined)?.records,
+    (obj.data as Record<string, unknown> | undefined)?.items,
+    (obj.result as Record<string, unknown> | undefined)?.rows,
+    (obj.result as Record<string, unknown> | undefined)?.list,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c) && c.length > 0) return c as OrderRow[];
+  }
+  // Fallback: any array property
+  for (const v of Object.values(obj)) {
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") return v as OrderRow[];
+  }
+  return [];
+}
+
 async function getOrderList(
   token: string,
 ): Promise<{ status: number; rows: OrderRow[]; raw: unknown; error?: string }> {
@@ -144,13 +173,13 @@ async function getOrderList(
       },
     );
     const text = await r.text();
-    let j: { rows?: OrderRow[]; code?: number; msg?: string } = {};
+    let j: unknown = {};
     try {
       j = text ? JSON.parse(text) : {};
     } catch {
       return { status: r.status, rows: [], raw: text, error: `Parse error: ${text.slice(0, 200)}` };
     }
-    return { status: r.status, rows: Array.isArray(j.rows) ? j.rows : [], raw: j };
+    return { status: r.status, rows: extractRows(j), raw: j };
   } catch (e) {
     return { status: 0, rows: [], raw: null, error: e instanceof Error ? e.message : String(e) };
   }
