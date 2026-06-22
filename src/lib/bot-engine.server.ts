@@ -266,28 +266,32 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    const res = await receiveOrder(token, oid);
-    if (res.ok) {
-      await supabaseAdmin
-        .from("bot_users")
-        .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
-        .eq("id", u.id);
-      u.orders_grabbed = (u.orders_grabbed || 0) + 1;
-      await log(u.id, u.slot, "success", `✅ Grabbed ${oid} · ${amt} SAR · ${payLabel}`);
-      await sendTelegram(
-        u.telegram_bot_token,
-        u.telegram_chat_id,
-        `🟢 <b>ORDER GRABBED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: <b>${amt} SAR</b>\nPayment: ${payLabel}`,
-      );
-    } else {
-      const reason = res.msg || `Network Grab Race Lost / Server Error (HTTP ${res.status})`;
-      await log(u.id, u.slot, "warn", `Miss ${oid}: ${reason}`);
-      await sendTelegram(
-        u.telegram_bot_token,
-        u.telegram_chat_id,
-        `🔴 <b>ORDER MISSED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${reason}`,
-      );
-    }
+    // INSTANT GRAB: fire receive without awaiting, handle result async to win race
+    const grabPromise = receiveOrder(token, oid);
+    void grabPromise.then(async (res) => {
+      if (res.ok) {
+        await supabaseAdmin
+          .from("bot_users")
+          .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
+          .eq("id", u.id);
+        u.orders_grabbed = (u.orders_grabbed || 0) + 1;
+        await log(u.id, u.slot, "success", `✅ Grabbed ${oid} · ${amt} SAR · ${payLabel}`);
+        await sendTelegram(
+          u.telegram_bot_token,
+          u.telegram_chat_id,
+          `🟢 <b>ORDER GRABBED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: <b>${amt} SAR</b>\nPayment: ${payLabel}`,
+        );
+      } else {
+        const reason = res.msg || `Network Grab Race Lost / Server Error (HTTP ${res.status})`;
+        await log(u.id, u.slot, "warn", `Miss ${oid}: ${reason}`);
+        await sendTelegram(
+          u.telegram_bot_token,
+          u.telegram_chat_id,
+          `🔴 <b>ORDER MISSED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${reason}`,
+        );
+      }
+    });
+
   }
 
   if (newSeen.length) {
