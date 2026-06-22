@@ -129,38 +129,33 @@ const MOBILE_HEADERS = {
   "X-Requested-With": "com.application.package",
 };
 
-function extractRows(j: unknown): OrderRow[] {
-  if (!j || typeof j !== "object") return [];
-  const obj = j as Record<string, unknown>;
-  // Try common keys in priority order
-  const candidates = [
-    obj.rows,
-    obj.data,
-    obj.list,
-    obj.orders,
-    obj.result,
-    obj.records,
-    obj.items,
-    (obj.data as Record<string, unknown> | undefined)?.rows,
-    (obj.data as Record<string, unknown> | undefined)?.list,
-    (obj.data as Record<string, unknown> | undefined)?.records,
-    (obj.data as Record<string, unknown> | undefined)?.items,
-    (obj.result as Record<string, unknown> | undefined)?.rows,
-    (obj.result as Record<string, unknown> | undefined)?.list,
-  ];
-  for (const c of candidates) {
-    if (Array.isArray(c) && c.length > 0) return c as OrderRow[];
-  }
-  // Fallback: any array property
-  for (const v of Object.values(obj)) {
-    if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") return v as OrderRow[];
-  }
-  return [];
+const cleanCycleJitterMs = () => 1000 + Math.floor(Math.random() * 801);
+let globalRateLimitCooldownUntil = 0;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function hasTooManyRequests(payload: unknown, error?: string): boolean {
+  const haystack = [error, typeof payload === "string" ? payload : JSON.stringify(payload ?? {})]
+    .filter(Boolean)
+    .join(" ");
+  return haystack.includes("Too many requests");
+}
+
+async function applyRateLimitCooldown(u: BotUser): Promise<void> {
+  globalRateLimitCooldownUntil = Date.now() + 4000;
+  await setStatus(u.id, "cooldown", "Rate limit cooldown active");
+  await log(u.id, u.slot, "warn", "[ANTI-BAN]: Rate limit hit, cooling down 4s...");
+  await sleep(4000);
+}
+
+async function waitForGlobalCooldown(): Promise<void> {
+  const waitMs = globalRateLimitCooldownUntil - Date.now();
+  if (waitMs > 0) await sleep(waitMs);
 }
 
 async function getOrderList(
   token: string,
-): Promise<{ status: number; rows: OrderRow[]; raw: unknown; error?: string }> {
+): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean }> {
   try {
     const r = await fetch(
       `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all&orderByColumn=createTime&isAsc=asc`,
@@ -177,11 +172,20 @@ async function getOrderList(
     try {
       j = text ? JSON.parse(text) : {};
     } catch {
-      return { status: r.status, rows: [], raw: text, error: `Parse error: ${text.slice(0, 200)}` };
+      return {
+        status: r.status,
+        orders: [],
+        raw: text,
+        error: `Parse error: ${text.slice(0, 200)}`,
+        rateLimited: hasTooManyRequests(text),
+      };
     }
-    return { status: r.status, rows: extractRows(j), raw: j };
+    const response = { data: j as { rows?: OrderRow[] } };
+    const orders = response.data.rows || [];
+    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j) };
   } catch (e) {
-    return { status: 0, rows: [], raw: null, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error) };
   }
 }
 
@@ -227,6 +231,7 @@ async function receiveOrder(token: string, orderId: string) {
 
 /** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
 export async function tickUser(u: BotUser): Promise<void> {
+  await waitForGlobalCooldown();
   let token = u.auth_token;
   if (!token) {
     token = await loginUser(u);
@@ -240,9 +245,8 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (!token) return;
     list = await getOrderList(token);
   }
-  // Fail-safe bypass: HTTP 500 (or transport error) → silent 800ms cooldown + one retry
-  if (list.status === 500 || list.status === 0 || list.status === 502 || list.status === 503) {
-    await new Promise((r) => setTimeout(r, 800));
+  if (list.rateLimited || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
+    await applyRateLimitCooldown(u);
     list = await getOrderList(token);
   }
   if (list.status !== 200) {
@@ -251,21 +255,18 @@ export async function tickUser(u: BotUser): Promise<void> {
     return;
   }
 
-  await supabaseAdmin
-    .from("bot_users")
-    .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
-    .eq("id", u.id);
-
-  // DIAGNOSTIC: dump raw payload when no rows extracted, so we can see alt key names
-  if (list.rows.length === 0) {
+  if (list.orders.length === 0) {
     const dump = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw);
     console.log("[ORDER-LIST RAW]", dump);
+    await supabaseAdmin
+      .from("bot_users")
+      .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
+      .eq("id", u.id);
     await log(u.id, u.slot, "info", `[RAW PAYLOAD] ${(dump || "").slice(0, 500)}`);
     return;
   }
 
-  // HIGH-VISIBILITY: detection event
-  await log(u.id, u.slot, "success", `[DETECTION]: ${list.rows.length} order(s) found, initiating immediate grab!`);
+  const orders = list.orders;
 
   const seen = new Set(u.seen_order_ids || []);
   // Normalize filter aliases → tokens to match loosely against payment strings
@@ -295,7 +296,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     return raw || "Unknown";
   };
 
-  for (const o of list.rows) {
+  for (const o of orders) {
     const oid = pickOrderId(o);
     if (!oid || seen.has(oid)) continue;
     newSeen.push(oid);
@@ -320,8 +321,9 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    // INSTANT GRAB: fire receive without awaiting, handle result async to win race
+    // INSTANT GRAB: fire receive before any detection log/notification work to win the race
     const grabPromise = receiveOrder(token, oid);
+    await log(u.id, u.slot, "success", "[DETECTION]: Order found, initiating immediate grab!");
     void grabPromise.then(async (res) => {
       if (res.ok) {
         await supabaseAdmin
@@ -371,8 +373,8 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     const now = Date.now();
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
-      const sleep = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-      await new Promise((r) => setTimeout(r, sleep));
+      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
+      await sleep(sleepMs);
       continue;
     }
     await Promise.all(
@@ -383,7 +385,7 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
           await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
         }
         ticks++;
-        s.nextAt = Date.now() + Math.max(200, s.u.polling_interval_ms);
+        s.nextAt = Date.now() + cleanCycleJitterMs();
       }),
     );
   }
