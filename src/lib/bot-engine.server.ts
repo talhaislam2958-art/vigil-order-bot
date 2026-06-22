@@ -256,17 +256,42 @@ export async function tickUser(u: BotUser): Promise<void> {
     .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
     .eq("id", u.id);
 
+  // DIAGNOSTIC: dump raw payload when no rows extracted, so we can see alt key names
+  if (list.rows.length === 0) {
+    const dump = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw);
+    console.log("[ORDER-LIST RAW]", dump);
+    await log(u.id, u.slot, "info", `[RAW PAYLOAD] ${(dump || "").slice(0, 500)}`);
+    return;
+  }
+
+  // HIGH-VISIBILITY: detection event
+  await log(u.id, u.slot, "success", `[DETECTION]: ${list.rows.length} order(s) found, initiating immediate grab!`);
 
   const seen = new Set(u.seen_order_ids || []);
-  const allowed = (u.payment_methods || []).map((s) => s.toLowerCase());
+  // Normalize filter aliases → tokens to match loosely against payment strings
+  const aliasMap: Record<string, string[]> = {
+    "stc pay": ["stc", "stcpay"],
+    stc: ["stc"],
+    urpay: ["urpay", "ur pay", "ur-pay"],
+    "ur pay": ["urpay", "ur pay"],
+    barq: ["barq"],
+    banks: ["bank"],
+    bank: ["bank"],
+  };
+  const allowedTokens: string[] = [];
+  for (const m of u.payment_methods || []) {
+    const key = String(m).toLowerCase().trim();
+    const toks = aliasMap[key] || [key];
+    allowedTokens.push(...toks);
+  }
   const newSeen: string[] = [];
 
   const friendly = (raw: string): string => {
     const r = raw.toLowerCase();
-    if (r.includes("stc")) return "STC Pay";
-    if (r.includes("urpay") || r.includes("ur pay")) return "Urpay";
-    if (r.includes("barq")) return "Barq";
-    if (r.includes("bank")) return "Banks";
+    if (/stc/.test(r)) return "STC Pay";
+    if (/ur\s*-?\s*pay/.test(r)) return "Urpay";
+    if (/barq/.test(r)) return "Barq";
+    if (/bank/.test(r)) return "Banks";
     return raw || "Unknown";
   };
 
@@ -282,8 +307,8 @@ export async function tickUser(u: BotUser): Promise<void> {
     let skipReason = "";
     if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
       skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
-    } else if (allowed.length > 0 && !allowed.some((p) => pay.includes(p))) {
-      skipReason = `Payment "${payLabel}" not in selected filters`;
+    } else if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
+      skipReason = `Payment "${payLabel}" (raw: "${pay}") not in selected filters [${allowedTokens.join(",")}]`;
     }
     if (skipReason) {
       await log(u.id, u.slot, "warn", `Skip ${oid}: ${skipReason}`);
