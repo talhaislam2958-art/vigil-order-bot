@@ -119,16 +119,41 @@ export async function loginUser(u: BotUser): Promise<string | null> {
   return null;
 }
 
-async function getOrderList(token: string): Promise<{ status: number; rows: OrderRow[]; raw: unknown }> {
-  const r = await fetch(
-    `${BASE}/bus/user/order/list?pageNum=1&pageSize=15&orderByColumn=createTime+asc,&receiverName=&isAsc=asc`,
-    {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  );
-  const j = (await r.json().catch(() => ({}))) as { rows?: OrderRow[]; code?: number };
-  return { status: r.status, rows: Array.isArray(j.rows) ? j.rows : [], raw: j };
+const MOBILE_HEADERS = {
+  Accept: "application/json, text/plain, */*",
+  "Content-Type": "application/json;charset=utf-8",
+  "User-Agent":
+    "Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-site",
+  "X-Requested-With": "com.application.package",
+};
+
+async function getOrderList(
+  token: string,
+): Promise<{ status: number; rows: OrderRow[]; raw: unknown; error?: string }> {
+  try {
+    const r = await fetch(
+      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all&orderByColumn=createTime&isAsc=asc`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...MOBILE_HEADERS,
+        },
+      },
+    );
+    const text = await r.text();
+    let j: { rows?: OrderRow[]; code?: number; msg?: string } = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      return { status: r.status, rows: [], raw: text, error: `Parse error: ${text.slice(0, 200)}` };
+    }
+    return { status: r.status, rows: Array.isArray(j.rows) ? j.rows : [], raw: j };
+  } catch (e) {
+    return { status: 0, rows: [], raw: null, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 type OrderRow = {
