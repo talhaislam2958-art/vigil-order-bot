@@ -180,16 +180,20 @@ function pickOrderId(o: OrderRow): string {
 }
 
 async function receiveOrder(token: string, orderId: string) {
-  const r = await fetch(`${BASE}/bus/user/order/receive`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ orderId }),
-  });
-  const j = (await r.json().catch(() => ({}))) as { code?: number; msg?: string };
-  return { status: r.status, ok: j.code === 200 || r.ok, msg: j.msg };
+  try {
+    const r = await fetch(`${BASE}/bus/user/order/receive`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...MOBILE_HEADERS,
+      },
+      body: JSON.stringify({ orderId }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { code?: number; msg?: string };
+    return { status: r.status, ok: j.code === 200 || r.ok, msg: j.msg };
+  } catch (e) {
+    return { status: 0, ok: false, msg: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
@@ -207,8 +211,14 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (!token) return;
     list = await getOrderList(token);
   }
+  // Fail-safe bypass: HTTP 500 (or transport error) → silent 800ms cooldown + one retry
+  if (list.status === 500 || list.status === 0 || list.status === 502 || list.status === 503) {
+    await new Promise((r) => setTimeout(r, 800));
+    list = await getOrderList(token);
+  }
   if (list.status !== 200) {
-    await log(u.id, u.slot, "error", `getOrderList HTTP ${list.status}`);
+    const raw = list.error || (typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw)?.slice(0, 200));
+    await log(u.id, u.slot, "error", `getOrderList HTTP ${list.status} ${raw ?? ""}`.trim());
     return;
   }
 
@@ -216,6 +226,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     .from("bot_users")
     .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
     .eq("id", u.id);
+
 
   const seen = new Set(u.seen_order_ids || []);
   const allowed = (u.payment_methods || []).map((s) => s.toLowerCase());
