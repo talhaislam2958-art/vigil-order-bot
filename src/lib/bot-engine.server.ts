@@ -255,14 +255,13 @@ export async function tickUser(u: BotUser): Promise<void> {
     return;
   }
 
-  await supabaseAdmin
-    .from("bot_users")
-    .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
-    .eq("id", u.id);
-
   if (list.orders.length === 0) {
     const dump = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw);
     console.log("[ORDER-LIST RAW]", dump);
+    await supabaseAdmin
+      .from("bot_users")
+      .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
+      .eq("id", u.id);
     await log(u.id, u.slot, "info", `[RAW PAYLOAD] ${(dump || "").slice(0, 500)}`);
     return;
   }
@@ -374,8 +373,8 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     const now = Date.now();
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
-      const sleep = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-        await sleep(sleepMs);
+      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
+      await sleep(sleepMs);
       continue;
     }
     await Promise.all(
