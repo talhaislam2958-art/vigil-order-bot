@@ -628,16 +628,16 @@ function UserCard({
       }`}
     >
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-surface/40 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="grid size-9 place-items-center rounded-lg border border-border bg-background font-mono text-sm font-bold neon-text">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-surface/40 px-3 py-3 sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-background font-mono text-sm font-bold neon-text">
             {String(u.slot).padStart(2, "0")}
           </div>
           <input
             value={v.label ?? ""}
             onChange={(e) => setF("label", e.target.value)}
             placeholder={`USER-${u.slot}`}
-            className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-bold tracking-wide hover:border-border focus:border-border focus:outline-none"
+            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-bold tracking-wide hover:border-border focus:border-border focus:outline-none"
           />
           <StatusPill status={v.status} msg={v.status_message} />
         </div>
