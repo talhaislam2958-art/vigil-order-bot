@@ -355,26 +355,44 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
           )}
         </section>
 
-        <aside className="space-y-3 lg:sticky lg:top-20 lg:self-start">
-          <div className="cyber-card rounded-2xl p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Activity className="size-4 neon-text" />
-                <h2 className="text-xs font-bold uppercase tracking-widest">Global Activity</h2>
+        <aside className="min-w-0 space-y-3 lg:sticky lg:top-20 lg:self-start">
+          <div className="cyber-card w-full rounded-2xl p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Activity className="size-4 shrink-0 neon-text" />
+                <h2 className="truncate text-xs font-bold uppercase tracking-widest">Global Activity</h2>
               </div>
-              <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { clearLogs: clr } = await import("@/lib/admin.functions");
+                      await clr({ data: { token } });
+                      await refresh();
+                      toast.success("Global logs cleared");
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Failed");
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                >
+                  <Eraser className="size-3" />
+                  Clear
+                </button>
+              </div>
             </div>
-            <div className="terminal max-h-[60vh] space-y-1 overflow-y-auto rounded-lg p-3 text-[11px]">
+            <div className="terminal max-h-[60vh] w-full space-y-1 overflow-y-auto overflow-x-hidden rounded-lg p-3 text-[11px]">
               {logs.length === 0 && <p className="text-muted-foreground">// no activity yet</p>}
               {logs.map((l) => (
                 <LogLine key={l.id} l={l} />
               ))}
             </div>
           </div>
-          <div className="rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
+          <div className="w-full rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
             <p className="font-bold uppercase tracking-widest text-foreground">⚡ 24/7 Cloud Engine</p>
             <p className="mt-1 font-mono">
-              Runs on Lovable's built-in cloud (Edge + scheduled jobs every ~10s). Keeps running when your browser is closed.
+              Runs on built-in cloud (Edge + scheduled jobs every ~10s). Keeps running when your browser is closed.
             </p>
           </div>
         </aside>
