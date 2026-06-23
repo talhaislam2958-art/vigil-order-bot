@@ -130,12 +130,9 @@ const MOBILE_HEADERS = {
   "X-Requested-With": "com.application.package",
 };
 
-/** Human-like jitter around the user's configured base interval (±10%, min 200ms). */
+/** Exact polling interval as configured on the dashboard (no jitter, no fingerprint shifting). */
 export function nextJitterMs(baseMs: number): number {
-  const base = Math.max(200, baseMs || 4000);
-  const lo = Math.floor(base * 0.9);
-  const hi = Math.floor(base * 1.125);
-  return lo + Math.floor(Math.random() * (hi - lo + 1));
+  return Math.max(200, baseMs || 4000);
 }
 
 const perUserCooldownUntil = new Map<string, number>();
