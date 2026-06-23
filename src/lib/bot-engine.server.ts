@@ -130,12 +130,9 @@ const MOBILE_HEADERS = {
   "X-Requested-With": "com.application.package",
 };
 
-/** Human-like jitter around the user's configured base interval (±10%, min 200ms). */
+/** Exact polling interval as configured on the dashboard (no jitter, no fingerprint shifting). */
 export function nextJitterMs(baseMs: number): number {
-  const base = Math.max(200, baseMs || 4000);
-  const lo = Math.floor(base * 0.9);
-  const hi = Math.floor(base * 1.125);
-  return lo + Math.floor(Math.random() * (hi - lo + 1));
+  return Math.max(200, baseMs || 4000);
 }
 
 const perUserCooldownUntil = new Map<string, number>();
@@ -250,23 +247,47 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (!token) return;
   }
 
-  await log(u.id, u.slot, "info", "[POLLING] Fetching order list...");
+  await log(u.id, u.slot, "info", `[POLLING] Slot ${u.slot} → GET /bus/user/order/list`);
   let list = await getOrderList(token);
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
-    await log(u.id, u.slot, "warn", "Token expired, re-logging in");
+    await log(u.id, u.slot, "warn", `[SERVER ALERT] Slot ${u.slot} token expired (401). Re-logging in.`);
     token = await loginUser(u);
     if (!token) return;
     list = await getOrderList(token);
   }
-  if (list.rateLimited || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
+
+  // Always print the exact raw server response for full transparency.
+  const rawText =
+    typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
+  const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
+  const serverMsg = (list.raw as { msg?: string } | null)?.msg ?? "";
+
+  if (list.rateLimited || list.status === 429 || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
+    await log(
+      u.id,
+      u.slot,
+      "error",
+      `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) — raw: ${rawSnippet}`,
+    );
     await applyRateLimitCooldown(u);
     return;
   }
   if (list.status !== 200) {
-    const raw = list.error || (typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw)?.slice(0, 200));
-    await log(u.id, u.slot, "error", `getOrderList HTTP ${list.status} ${raw ?? ""}`.trim());
+    await log(
+      u.id,
+      u.slot,
+      "error",
+      `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} — ${list.error || rawSnippet}`,
+    );
     return;
   }
+
+  await log(
+    u.id,
+    u.slot,
+    "info",
+    `[HTTP 200] Slot ${u.slot} · ${list.ms}ms · rows=${list.orders.length} · raw: ${rawSnippet}`,
+  );
 
   if (list.orders.length === 0) {
     await supabaseAdmin
