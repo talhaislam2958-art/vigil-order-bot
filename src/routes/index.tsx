@@ -265,30 +265,30 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
   const totalGrabs = useMemo(() => users.reduce((s, u) => s + (u.orders_grabbed || 0), 0), [users]);
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-10 border-b border-border/60 bg-background/70 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="neon-border grid size-10 place-items-center rounded-xl bg-background">
+    <div className="min-h-screen w-full overflow-x-hidden">
+      <header className="sticky top-0 z-10 w-full border-b border-border/60 bg-background">
+        <div className="mx-auto grid w-full max-w-7xl grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 sm:flex sm:flex-wrap sm:justify-between sm:px-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="neon-border grid size-10 shrink-0 place-items-center rounded-xl bg-background">
               <Bot className="size-5 neon-text" />
             </div>
-            <div>
-              <h1 className="text-sm font-bold uppercase tracking-widest neon-text">
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-bold uppercase tracking-widest neon-text">
                 Order Receiver // 24/7
               </h1>
-              <p className="text-[11px] font-mono text-muted-foreground">
+              <p className="truncate text-[11px] font-mono text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5">
                   <span className="pulse-dot inline-block size-1.5 rounded-full bg-[var(--neon)]" />
-                  CLOUD ENGINE ONLINE
+                  ONLINE
                 </span>
                 {" · "}
-                <span className="text-foreground">{activeCount}</span> active
+                <span className="text-foreground">{activeCount}</span>a
                 {" · "}
-                <span className="text-foreground">{totalGrabs}</span> grabs
+                <span className="text-foreground">{totalGrabs}</span>g
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               title="Toggle theme"
@@ -336,8 +336,8 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
         </div>
       </header>
 
-      <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 lg:grid-cols-[1fr_340px]">
-        <section className="space-y-4">
+      <main className="mx-auto grid w-full max-w-7xl gap-6 px-3 py-6 sm:px-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <section className="min-w-0 space-y-4">
           {loading && users.length === 0 ? (
             <div className="flex h-40 items-center justify-center text-muted-foreground">
               <Loader2 className="size-5 animate-spin" />
@@ -355,26 +355,44 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
           )}
         </section>
 
-        <aside className="space-y-3 lg:sticky lg:top-20 lg:self-start">
-          <div className="cyber-card rounded-2xl p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Activity className="size-4 neon-text" />
-                <h2 className="text-xs font-bold uppercase tracking-widest">Global Activity</h2>
+        <aside className="min-w-0 space-y-3 lg:sticky lg:top-20 lg:self-start">
+          <div className="cyber-card w-full rounded-2xl p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Activity className="size-4 shrink-0 neon-text" />
+                <h2 className="truncate text-xs font-bold uppercase tracking-widest">Global Activity</h2>
               </div>
-              <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { clearLogs: clr } = await import("@/lib/admin.functions");
+                      await clr({ data: { token } });
+                      await refresh();
+                      toast.success("Global logs cleared");
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : "Failed");
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                >
+                  <Eraser className="size-3" />
+                  Clear
+                </button>
+              </div>
             </div>
-            <div className="terminal max-h-[60vh] space-y-1 overflow-y-auto rounded-lg p-3 text-[11px]">
+            <div className="terminal max-h-[60vh] w-full space-y-1 overflow-y-auto overflow-x-hidden rounded-lg p-3 text-[11px]">
               {logs.length === 0 && <p className="text-muted-foreground">// no activity yet</p>}
               {logs.map((l) => (
                 <LogLine key={l.id} l={l} />
               ))}
             </div>
           </div>
-          <div className="rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
+          <div className="w-full rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
             <p className="font-bold uppercase tracking-widest text-foreground">⚡ 24/7 Cloud Engine</p>
             <p className="mt-1 font-mono">
-              Runs on Lovable's built-in cloud (Edge + scheduled jobs every ~10s). Keeps running when your browser is closed.
+              Runs on built-in cloud (Edge + scheduled jobs every ~10s). Keeps running when your browser is closed.
             </p>
           </div>
         </aside>
@@ -592,10 +610,10 @@ function UserCard({
     const id = setInterval(() => {
       const ts = new Date().toLocaleTimeString();
       const msgs = [
-        `[INT: ${pollMs}ms] Scanning order list…`,
-        `[INT: ${pollMs}ms] GET /bus/user/order/list → 200 OK`,
-        `[INT: ${pollMs}ms] Filter pass · ${v.min_price}-${v.max_price} SAR`,
-        `[INT: ${pollMs}ms] Idle · waiting for new order`,
+        `[POLLING] Fetching order list... (~${pollMs}ms)`,
+        `[POLLING] GET /bus/user/order/list → 200 OK`,
+        `[POLLING] Filter window ${v.min_price}-${v.max_price} SAR`,
+        `[POLLING] Idle · awaiting new order`,
       ];
       setSim((s) => [{ t: ts, msg: msgs[n++ % msgs.length] }, ...s].slice(0, 30));
     }, pollMs);
@@ -610,16 +628,16 @@ function UserCard({
       }`}
     >
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-surface/40 px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="grid size-9 place-items-center rounded-lg border border-border bg-background font-mono text-sm font-bold neon-text">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 bg-surface/40 px-3 py-3 sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-background font-mono text-sm font-bold neon-text">
             {String(u.slot).padStart(2, "0")}
           </div>
           <input
             value={v.label ?? ""}
             onChange={(e) => setF("label", e.target.value)}
             placeholder={`USER-${u.slot}`}
-            className="rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-bold tracking-wide hover:border-border focus:border-border focus:outline-none"
+            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm font-bold tracking-wide hover:border-border focus:border-border focus:outline-none"
           />
           <StatusPill status={v.status} msg={v.status_message} />
         </div>
@@ -857,7 +875,7 @@ function UserCard({
             Clear
           </button>
         </div>
-        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-md p-2.5 text-[11px] leading-relaxed">
+        <div className="terminal max-h-44 min-h-[88px] w-full space-y-0.5 overflow-y-auto overflow-x-hidden rounded-md p-2.5 text-[11px] leading-relaxed break-words">
           {sim.length === 0 && logs.length === 0 ? (
             <p className="text-muted-foreground">// awaiting activity…</p>
           ) : (
