@@ -610,10 +610,10 @@ function UserCard({
     const id = setInterval(() => {
       const ts = new Date().toLocaleTimeString();
       const msgs = [
-        `[INT: ${pollMs}ms] Scanning order list…`,
-        `[INT: ${pollMs}ms] GET /bus/user/order/list → 200 OK`,
-        `[INT: ${pollMs}ms] Filter pass · ${v.min_price}-${v.max_price} SAR`,
-        `[INT: ${pollMs}ms] Idle · waiting for new order`,
+        `[POLLING] Fetching order list... (~${pollMs}ms)`,
+        `[POLLING] GET /bus/user/order/list → 200 OK`,
+        `[POLLING] Filter window ${v.min_price}-${v.max_price} SAR`,
+        `[POLLING] Idle · awaiting new order`,
       ];
       setSim((s) => [{ t: ts, msg: msgs[n++ % msgs.length] }, ...s].slice(0, 30));
     }, pollMs);
@@ -875,7 +875,7 @@ function UserCard({
             Clear
           </button>
         </div>
-        <div className="terminal max-h-44 min-h-[88px] space-y-0.5 overflow-y-auto rounded-md p-2.5 text-[11px] leading-relaxed">
+        <div className="terminal max-h-44 min-h-[88px] w-full space-y-0.5 overflow-y-auto overflow-x-hidden rounded-md p-2.5 text-[11px] leading-relaxed break-words">
           {sim.length === 0 && logs.length === 0 ? (
             <p className="text-muted-foreground">// awaiting activity…</p>
           ) : (
