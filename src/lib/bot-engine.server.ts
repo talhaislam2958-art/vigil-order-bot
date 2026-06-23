@@ -4,6 +4,7 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
+const COOLDOWN_MS = 10_000;
 
 export type BotUser = {
   id: string;
@@ -63,13 +64,14 @@ export async function sendTelegram(
   bot_token: string,
   chat_id: string,
   text: string,
+  parse_mode: "HTML" | "Markdown" = "HTML",
 ): Promise<{ ok: boolean; error?: string }> {
   if (!bot_token || !chat_id) return { ok: false, error: "Missing Telegram bot token or chat id" };
   try {
     const r = await fetch(`https://api.telegram.org/bot${bot_token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id, text, parse_mode: "HTML" }),
+      body: JSON.stringify({ chat_id, text, parse_mode }),
     });
     const j = (await r.json().catch(() => ({}))) as { ok?: boolean; description?: string };
     if (!r.ok || !j.ok) return { ok: false, error: j.description || `HTTP ${r.status}` };
@@ -104,7 +106,6 @@ export async function loginUser(u: BotUser): Promise<string | null> {
     );
     return j.token;
   }
-  // failure
   const msg = (j.msg || "").toLowerCase();
   if (msg.includes("password") || msg.includes("user") || j.code === 500) {
     await setStatus(u.id, "invalid_creds", "Invalid Username or Password");
@@ -129,8 +130,15 @@ const MOBILE_HEADERS = {
   "X-Requested-With": "com.application.package",
 };
 
-const cleanCycleJitterMs = () => 1000 + Math.floor(Math.random() * 801);
-let globalRateLimitCooldownUntil = 0;
+/** Human-like jitter around the user's configured base interval (±10%, min 200ms). */
+export function nextJitterMs(baseMs: number): number {
+  const base = Math.max(200, baseMs || 4000);
+  const lo = Math.floor(base * 0.9);
+  const hi = Math.floor(base * 1.125);
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+const perUserCooldownUntil = new Map<string, number>();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -138,35 +146,36 @@ function hasTooManyRequests(payload: unknown, error?: string): boolean {
   const haystack = [error, typeof payload === "string" ? payload : JSON.stringify(payload ?? {})]
     .filter(Boolean)
     .join(" ");
-  return haystack.includes("Too many requests");
+  return /too many requests/i.test(haystack);
 }
 
 async function applyRateLimitCooldown(u: BotUser): Promise<void> {
-  globalRateLimitCooldownUntil = Date.now() + 4000;
-  await setStatus(u.id, "cooldown", "Rate limit cooldown active");
-  await log(u.id, u.slot, "warn", "[ANTI-BAN]: Rate limit hit, cooling down 4s...");
-  await sleep(4000);
-}
-
-async function waitForGlobalCooldown(): Promise<void> {
-  const waitMs = globalRateLimitCooldownUntil - Date.now();
-  if (waitMs > 0) await sleep(waitMs);
+  perUserCooldownUntil.set(u.id, Date.now() + COOLDOWN_MS);
+  await setStatus(u.id, "cooldown", `Cooling down ${COOLDOWN_MS / 1000}s (rate limit)`);
+  await log(
+    u.id,
+    u.slot,
+    "warn",
+    `[ANTI-FIREWALL] Rate limit threshold approached. Cooling down for ${COOLDOWN_MS / 1000}s...`,
+  );
+  await sleep(COOLDOWN_MS);
 }
 
 async function getOrderList(
   token: string,
-): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean }> {
+): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
+  const t0 = Date.now();
   try {
-    const r = await fetch(
-      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all&orderByColumn=createTime&isAsc=asc`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...MOBILE_HEADERS,
-        },
+    const url =
+      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
+      `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
+    const r = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...MOBILE_HEADERS,
       },
-    );
+    });
     const text = await r.text();
     let j: unknown = {};
     try {
@@ -178,14 +187,15 @@ async function getOrderList(
         raw: text,
         error: `Parse error: ${text.slice(0, 200)}`,
         rateLimited: hasTooManyRequests(text),
+        ms: Date.now() - t0,
       };
     }
     const response = { data: j as { rows?: OrderRow[] } };
     const orders = response.data.rows || [];
-    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j) };
+    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j), ms: Date.now() - t0 };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error) };
+    return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
   }
 }
 
@@ -231,13 +241,16 @@ async function receiveOrder(token: string, orderId: string) {
 
 /** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
 export async function tickUser(u: BotUser): Promise<void> {
-  await waitForGlobalCooldown();
+  const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
+  if (cooldownUntil > Date.now()) return; // honor per-user cooldown
+
   let token = u.auth_token;
   if (!token) {
     token = await loginUser(u);
     if (!token) return;
   }
 
+  await log(u.id, u.slot, "info", "[POLLING] Fetching order list...");
   let list = await getOrderList(token);
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
     await log(u.id, u.slot, "warn", "Token expired, re-logging in");
@@ -247,7 +260,7 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
   if (list.rateLimited || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
     await applyRateLimitCooldown(u);
-    list = await getOrderList(token);
+    return;
   }
   if (list.status !== 200) {
     const raw = list.error || (typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw)?.slice(0, 200));
@@ -256,22 +269,20 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 
   if (list.orders.length === 0) {
-    const dump = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw);
-    console.log("[ORDER-LIST RAW]", dump);
     await supabaseAdmin
       .from("bot_users")
       .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
       .eq("id", u.id);
-    await log(u.id, u.slot, "info", `[RAW PAYLOAD] ${(dump || "").slice(0, 500)}`);
     return;
   }
 
   const orders = list.orders;
+  const responseMs = list.ms;
 
   const seen = new Set(u.seen_order_ids || []);
-  // Normalize filter aliases → tokens to match loosely against payment strings
   const aliasMap: Record<string, string[]> = {
     "stc pay": ["stc", "stcpay"],
+    stcpay: ["stc", "stcpay"],
     stc: ["stc"],
     urpay: ["urpay", "ur pay", "ur-pay"],
     "ur pay": ["urpay", "ur pay"],
@@ -309,21 +320,21 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
       skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
     } else if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
-      skipReason = `Payment "${payLabel}" (raw: "${pay}") not in selected filters [${allowedTokens.join(",")}]`;
+      skipReason = `Payment "${payLabel}" not in selected filters`;
     }
     if (skipReason) {
-      await log(u.id, u.slot, "warn", `Skip ${oid}: ${skipReason}`);
+      await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
       await sendTelegram(
         u.telegram_bot_token,
         u.telegram_chat_id,
-        `⚠️ <b>Order skipped (Failed Filter Match)</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
+        `⚠️ <b>Order skipped</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
       );
       continue;
     }
 
-    // INSTANT GRAB: fire receive before any detection log/notification work to win the race
+    // INSTANT GRAB: fire receive immediately, before logs/telegram
     const grabPromise = receiveOrder(token, oid);
-    await log(u.id, u.slot, "success", "[DETECTION]: Order found, initiating immediate grab!");
+    await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
     void grabPromise.then(async (res) => {
       if (res.ok) {
         await supabaseAdmin
@@ -331,15 +342,16 @@ export async function tickUser(u: BotUser): Promise<void> {
           .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
           .eq("id", u.id);
         u.orders_grabbed = (u.orders_grabbed || 0) + 1;
-        await log(u.id, u.slot, "success", `✅ Grabbed ${oid} · ${amt} SAR · ${payLabel}`);
+        await log(u.id, u.slot, "success", `[GRAB SUCCEEDED] ${oid} · ${amt} SAR · ${payLabel} · ${responseMs}ms`);
         await sendTelegram(
           u.telegram_bot_token,
           u.telegram_chat_id,
-          `🟢 <b>ORDER GRABBED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: <b>${amt} SAR</b>\nPayment: ${payLabel}`,
+          `*🟢 ORDER GRABBED*\n*User:* ${userTag}\n*Order #:* \`${oid}\`\n*Amount:* *${amt} SAR*\n*Payment:* ${payLabel}\n*Response:* ${responseMs}ms`,
+          "Markdown",
         );
       } else {
-        const reason = res.msg || `Network Grab Race Lost / Server Error (HTTP ${res.status})`;
-        await log(u.id, u.slot, "warn", `Miss ${oid}: ${reason}`);
+        const reason = res.msg || `Race lost / Server Error (HTTP ${res.status})`;
+        await log(u.id, u.slot, "warn", `[GRAB MISSED] ${oid} — ${reason}`);
         await sendTelegram(
           u.telegram_bot_token,
           u.telegram_chat_id,
@@ -347,7 +359,6 @@ export async function tickUser(u: BotUser): Promise<void> {
         );
       }
     });
-
   }
 
   if (newSeen.length) {
@@ -356,7 +367,7 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 }
 
-/** Polls every active user, honoring per-user polling_interval_ms within a budget. */
+/** Polls every active user with adaptive per-user jitter until budget exhausted. */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
   const start = Date.now();
   const { data: users, error } = await supabaseAdmin
@@ -365,7 +376,6 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     .eq("is_active", true);
   if (error || !users) return { ticked: 0 };
 
-  // Iterate per-user with their own loops until budget exhausted
   const state = users.map((u) => ({ u: u as BotUser, nextAt: 0 }));
   let ticks = 0;
 
@@ -374,7 +384,7 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
       const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-      await sleep(sleepMs);
+      await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
       continue;
     }
     await Promise.all(
@@ -385,7 +395,7 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
           await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
         }
         ticks++;
-        s.nextAt = Date.now() + cleanCycleJitterMs();
+        s.nextAt = Date.now() + nextJitterMs(s.u.polling_interval_ms);
       }),
     );
   }
