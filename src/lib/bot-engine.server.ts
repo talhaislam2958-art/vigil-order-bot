@@ -247,7 +247,12 @@ export async function tickUser(u: BotUser): Promise<void> {
     if (!token) return;
   }
 
-  await log(u.id, u.slot, "info", `[POLLING] Slot ${u.slot} → GET /bus/user/order/list`);
+  await log(
+    u.id,
+    u.slot,
+    "info",
+    `[POLLING] Slot ${u.slot} → GET ${BASE}/bus/user/order/list (real fetch)`,
+  );
   let list = await getOrderList(token);
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
     await log(u.id, u.slot, "warn", `[SERVER ALERT] Slot ${u.slot} token expired (401). Re-logging in.`);
@@ -256,18 +261,27 @@ export async function tickUser(u: BotUser): Promise<void> {
     list = await getOrderList(token);
   }
 
-  // Always print the exact raw server response for full transparency.
+  // Always print the exact raw server response for every fetch — 1:1 with the [POLLING] line above.
   const rawText =
     typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
-  const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
+  const rawSnippet = rawText.length > 1200 ? rawText.slice(0, 1200) + "…" : rawText;
   const serverMsg = (list.raw as { msg?: string } | null)?.msg ?? "";
+
+  if (list.error && list.status !== 200) {
+    await log(
+      u.id,
+      u.slot,
+      "error",
+      `[API ERROR] Slot ${u.slot} HTTP ${list.status} · ${list.ms}ms · ${list.error}`,
+    );
+  }
 
   if (list.rateLimited || list.status === 429 || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
     await log(
       u.id,
       u.slot,
       "error",
-      `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) — raw: ${rawSnippet}`,
+      `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) · [RAW DATA]: ${rawSnippet}`,
     );
     await applyRateLimitCooldown(u);
     return;
@@ -277,7 +291,7 @@ export async function tickUser(u: BotUser): Promise<void> {
       u.id,
       u.slot,
       "error",
-      `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} — ${list.error || rawSnippet}`,
+      `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} · [RAW DATA]: ${rawSnippet}`,
     );
     return;
   }
@@ -286,8 +300,9 @@ export async function tickUser(u: BotUser): Promise<void> {
     u.id,
     u.slot,
     "info",
-    `[HTTP 200] Slot ${u.slot} · ${list.ms}ms · rows=${list.orders.length} · raw: ${rawSnippet}`,
+    `[HTTP 200] Slot ${u.slot} · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
   );
+
 
   if (list.orders.length === 0) {
     await supabaseAdmin
