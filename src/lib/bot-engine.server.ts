@@ -392,29 +392,54 @@ export async function tickUser(u: BotUser): Promise<void> {
     }
 
     // INSTANT GRAB: fire receive immediately, before logs/telegram
+    const grabStart = Date.now();
     const grabPromise = receiveOrder(token, o);
     await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
+    const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
     void grabPromise.then(async (res) => {
-      if (res.ok) {
+      const grabMs = Date.now() - grabStart;
+      // STRICT: only an explicit code===200 from /order/receive counts as a confirmed grab.
+      if (res.ok && res.code === 200) {
         await supabaseAdmin
           .from("bot_users")
           .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
           .eq("id", u.id);
         u.orders_grabbed = (u.orders_grabbed || 0) + 1;
-        await log(u.id, u.slot, "success", `[GRAB SUCCEEDED] ${oid} · ${amt} SAR · ${payLabel} · ${responseMs}ms`);
+        await log(
+          u.id,
+          u.slot,
+          "success",
+          `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${gramMsSafe(grabMs)}ms`,
+        );
         await sendTelegram(
           u.telegram_bot_token,
           u.telegram_chat_id,
-          `*🟢 ORDER GRABBED*\n*User:* ${userTag}\n*Order #:* \`${oid}\`\n*Amount:* *${amt} SAR*\n*Payment:* ${payLabel}\n*Response:* ${responseMs}ms`,
-          "Markdown",
+          `🚨 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
+            `Slot/ID: <b>${slotTag}</b>\n` +
+            `Order No: <code>${oid}</code>\n` +
+            `Amount: <b>${amt}</b> Riyals\n` +
+            `Payment: ${payLabel}\n` +
+            `Status: 100% Successfully Saved to Account!\n` +
+            `Response Time: ${grabMs}ms`,
         );
       } else {
-        const reason = res.msg || `Race lost / Server Error (HTTP ${res.status})`;
-        await log(u.id, u.slot, "warn", `[GRAB MISSED] ${oid} — ${reason}`);
+        const rawMsg = res.msg || `HTTP ${res.status}`;
+        await log(
+          u.id,
+          u.slot,
+          "warn",
+          `[GRAB MISSED] ${oid} · ${amt} SAR · ${payLabel} · code=${res.code ?? "n/a"} · reason="${rawMsg}"`,
+        );
         await sendTelegram(
           u.telegram_bot_token,
           u.telegram_chat_id,
-          `🔴 <b>ORDER MISSED</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${reason}`,
+          `⚠️ <b>[ORDER DETECTED BUT MISSED]</b>\n` +
+            `Slot/ID: <b>${slotTag}</b>\n` +
+            `Order No: <code>${oid}</code>\n` +
+            `Amount: <b>${amt}</b> Riyals\n` +
+            `Payment: ${payLabel}\n` +
+            `Status: Detected on server but could not be received (Lost the race to another bot).\n` +
+            `Reason: <code>${escapeHtml(rawMsg)}</code>`,
         );
       }
     });
