@@ -601,24 +601,8 @@ function UserCard({
   const lockedFail = u.status === "invalid_creds" || u.status === "suspended";
   const running = v.is_active;
 
-  // Local simulated heartbeat lines that scroll alongside real logs.
-  const [sim, setSim] = useState<{ t: string; msg: string }[]>([]);
-  const pollMs = Math.max(200, v.polling_interval_ms ?? 1000);
-  useEffect(() => {
-    if (!running) return;
-    let n = 0;
-    const id = setInterval(() => {
-      const ts = new Date().toLocaleTimeString();
-      const msgs = [
-        `[POLLING] Fetching order list... (~${pollMs}ms)`,
-        `[POLLING] GET /bus/user/order/list → 200 OK`,
-        `[POLLING] Filter window ${v.min_price}-${v.max_price} SAR`,
-        `[POLLING] Idle · awaiting new order`,
-      ];
-      setSim((s) => [{ t: ts, msg: msgs[n++ % msgs.length] }, ...s].slice(0, 30));
-    }, pollMs);
-    return () => clearInterval(id);
-  }, [running, pollMs, v.min_price, v.max_price]);
+  // No local simulation — every log line below is a real server event from bot_logs.
+
 
 
   return (
