@@ -205,10 +205,14 @@ async function getOrderList(
 
 type OrderRow = {
   orderId?: string | number;
+  orderNo?: string;
   id?: string | number;
   amount?: number | string;
   money?: number | string;
   price?: number | string;
+  showAmount?: number | string;
+  withdrawAmount?: number | string;
+  platPay?: number | string;
   payType?: string;
   payment?: string;
   paymentMethod?: string;
@@ -216,28 +220,32 @@ type OrderRow = {
 };
 
 function pickAmount(o: OrderRow): number {
-  const v = o.amount ?? o.money ?? o.price ?? 0;
+  const v = o.showAmount ?? o.withdrawAmount ?? o.amount ?? o.money ?? o.price ?? o.platPay ?? 0;
   return Number(v) || 0;
 }
 function pickPayment(o: OrderRow): string {
   return String(o.payType ?? o.payment ?? o.paymentMethod ?? "").toLowerCase();
 }
 function pickOrderId(o: OrderRow): string {
-  return String(o.orderId ?? o.id ?? "");
+  // Real server uses orderNo (e.g. "WO20678984955..."). Fall back to other keys.
+  return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
 
-async function receiveOrder(token: string, orderId: string) {
+async function receiveOrder(token: string, order: OrderRow) {
   try {
+    // CRITICAL: the live endpoint expects the FULL order object as body (Content-Length ~736),
+    // not {orderId}. Captured from production DevTools.
     const r = await fetch(`${BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         ...MOBILE_HEADERS,
       },
-      body: JSON.stringify({ orderId }),
+      body: JSON.stringify(order),
     });
     const j = (await r.json().catch(() => ({}))) as { code?: number; msg?: string };
     return { status: r.status, ok: j.code === 200 || r.ok, msg: j.msg };
+
   } catch (e) {
     return { status: 0, ok: false, msg: e instanceof Error ? e.message : String(e) };
   }
