@@ -409,7 +409,7 @@ export async function tickUser(u: BotUser): Promise<void> {
           u.id,
           u.slot,
           "success",
-          `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${gramMsSafe(grabMs)}ms`,
+          `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${grabMs}ms`,
         );
         await sendTelegram(
           u.telegram_bot_token,
@@ -439,7 +439,7 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
             `Status: Detected on server but could not be received (Lost the race to another bot).\n` +
-            `Reason: <code>${escapeHtml(rawMsg)}</code>`,
+            `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
     });
