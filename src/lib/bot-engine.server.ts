@@ -384,7 +384,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     }
 
     // INSTANT GRAB: fire receive immediately, before logs/telegram
-    const grabPromise = receiveOrder(token, oid);
+    const grabPromise = receiveOrder(token, o);
     await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
     void grabPromise.then(async (res) => {
       if (res.ok) {
