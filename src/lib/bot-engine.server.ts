@@ -243,11 +243,19 @@ async function receiveOrder(token: string, order: OrderRow) {
       },
       body: JSON.stringify(order),
     });
-    const j = (await r.json().catch(() => ({}))) as { code?: number; msg?: string };
-    return { status: r.status, ok: j.code === 200 || r.ok, msg: j.msg };
-
+    const text = await r.text();
+    let j: { code?: number; msg?: string } = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch {
+      j = { msg: text.slice(0, 200) };
+    }
+    // STRICT confirmation: ONLY treat code === 200 as a true server-confirmed grab.
+    // HTTP 2xx without code === 200 is NOT a confirmed capture (server uses code in body).
+    const confirmed = j.code === 200;
+    return { status: r.status, ok: confirmed, code: j.code, msg: j.msg, raw: text };
   } catch (e) {
-    return { status: 0, ok: false, msg: e instanceof Error ? e.message : String(e) };
+    return { status: 0, ok: false, code: undefined, msg: e instanceof Error ? e.message : String(e), raw: "" };
   }
 }
 
