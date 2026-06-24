@@ -123,12 +123,19 @@ export async function loginUser(u: BotUser): Promise<string | null> {
 const MOBILE_HEADERS = {
   Accept: "application/json, text/plain, */*",
   "Content-Type": "application/json;charset=utf-8",
+  "Accept-Language": "en-US,en;q=0.9",
+  Origin: "https://h5.parttime.mobi",
+  Referer: "https://h5.parttime.mobi/",
   "User-Agent":
-    "Mozilla/5.0 (Linux; Android 12; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+  "Sec-Ch-Ua": '"Chromium";v="139", "Not;A=Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?1",
+  "Sec-Ch-Ua-Platform": '"Android"',
+  "Sec-Fetch-Dest": "empty",
   "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Site": "same-site",
-  "X-Requested-With": "com.application.package",
+  "Sec-Fetch-Site": "same-origin",
 };
+
 
 /** Exact polling interval as configured on the dashboard (no jitter, no fingerprint shifting). */
 export function nextJitterMs(baseMs: number): number {
