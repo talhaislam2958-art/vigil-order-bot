@@ -439,10 +439,9 @@ export async function tickUser(u: BotUser): Promise<void> {
     }
     if (skipReason) {
       await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
-      await sendTelegram(
-        u.telegram_bot_token,
-        u.telegram_chat_id,
-        `⚠️ <b>Order skipped</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
+      await sendDualTelegram(
+        u,
+        `⚠️ <b>[ORDER SKIPPED]</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
       );
       continue;
     }
@@ -450,11 +449,12 @@ export async function tickUser(u: BotUser): Promise<void> {
     // INSTANT GRAB: fire receive immediately, before logs/telegram
     const grabStart = Date.now();
     const grabPromise = receiveOrder(token, o);
+    const detectionMsg = `🔎 <b>[ORDER DETECTED]</b>\nSlot/ID: <b>${u.label || u.username} (Slot ${u.slot})</b>\nOrder No: <code>${oid}</code>\nAmount: <b>${amt}</b> Riyals\nPayment: ${payLabel}\nStatus: Initiating immediate grab...`;
     await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
+    void sendDualTelegram(u, detectionMsg);
     const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
     void grabPromise.then(async (res) => {
       const grabMs = Date.now() - grabStart;
-      // STRICT: only an explicit code===200 from /order/receive counts as a confirmed grab.
       if (res.ok && res.code === 200) {
         await supabaseAdmin
           .from("bot_users")
@@ -467,10 +467,9 @@ export async function tickUser(u: BotUser): Promise<void> {
           "success",
           `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${grabMs}ms`,
         );
-        await sendTelegram(
-          u.telegram_bot_token,
-          u.telegram_chat_id,
-          `🚨 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
+        await sendDualTelegram(
+          u,
+          `🟢 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
             `Slot/ID: <b>${slotTag}</b>\n` +
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
@@ -486,18 +485,19 @@ export async function tickUser(u: BotUser): Promise<void> {
           "warn",
           `[GRAB MISSED] ${oid} · ${amt} SAR · ${payLabel} · code=${res.code ?? "n/a"} · reason="${rawMsg}"`,
         );
-        await sendTelegram(
-          u.telegram_bot_token,
-          u.telegram_chat_id,
+        await sendDualTelegram(
+          u,
           `⚠️ <b>[ORDER DETECTED BUT MISSED]</b>\n` +
             `Slot/ID: <b>${slotTag}</b>\n` +
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
             `Status: Detected on server but could not be received (Lost the race to another bot).\n` +
+            `Response Time: ${grabMs}ms\n` +
             `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
+
     });
   }
 
