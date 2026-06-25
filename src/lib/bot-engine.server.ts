@@ -136,9 +136,18 @@ const MOBILE_HEADERS = {
 };
 
 
-/** Exact polling interval as configured on the dashboard (no jitter, no fingerprint shifting). */
+/**
+ * CHAOTIC polling jitter — non-repeating per-tick float.
+ * Floor: 1000ms. Ceiling: user dashboard input (MAX).
+ * Each call returns a brand-new high-entropy Math.random() float, so no
+ * chronological sequence ever loops or repeats.
+ */
 export function nextJitterMs(baseMs: number): number {
-  return Math.max(200, baseMs || 4000);
+  const max = Math.max(1000, Math.round(baseMs || 4000));
+  if (max <= 1000) return 1000;
+  // Mix two random draws for extra entropy (XOR of mantissas).
+  const r = (Math.random() + Math.random() * 0.9173) % 1;
+  return 1000 + r * (max - 1000);
 }
 
 const perUserCooldownUntil = new Map<string, number>();
@@ -152,17 +161,18 @@ function hasTooManyRequests(payload: unknown, error?: string): boolean {
   return /too many requests/i.test(haystack);
 }
 
+/** Randomized per-slot cooldown 5000–7000ms. Brand-new value every trigger. */
 async function applyRateLimitCooldown(u: BotUser): Promise<void> {
-  perUserCooldownUntil.set(u.id, Date.now() + COOLDOWN_MS);
-  await setStatus(u.id, "cooldown", `Cooling down ${COOLDOWN_MS / 1000}s (rate limit)`);
-  await log(
-    u.id,
-    u.slot,
-    "warn",
-    `[ANTI-FIREWALL] Rate limit threshold approached. Cooling down for ${COOLDOWN_MS / 1000}s...`,
-  );
-  await sleep(COOLDOWN_MS);
+  const duration = 5000 + Math.random() * 2000; // chaotic 5.0s–7.0s
+  const seconds = (duration / 1000).toFixed(2);
+  perUserCooldownUntil.set(u.id, Date.now() + duration);
+  await setStatus(u.id, "cooldown", `Cooling down ${seconds}s (rate limit)`);
+  const msg = `⚠️ [ANTI-FIREWALL] Slot ${u.slot} hit "Too many requests". Cooling down for ${seconds}s...`;
+  await log(u.id, u.slot, "warn", msg);
+  await sendDualTelegram(u, msg);
+  await sleep(duration);
 }
+
 
 async function getOrderList(
   token: string,
