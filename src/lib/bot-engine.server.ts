@@ -208,16 +208,24 @@ function hasTooManyRequests(payload: unknown, error?: string): boolean {
   return /too many requests/i.test(haystack);
 }
 
-/** Randomized per-slot cooldown 5000–7000ms. Brand-new value every trigger. */
+/**
+ * STRICT 10-second execution lock per slot. No HTTP requests are issued for this
+ * slot during the cooldown window (enforced by perUserCooldownUntil check in tickUser
+ * and by skipping the slot's scheduling in runPollCycle).
+ * NO Telegram notifications are sent for cooldown events — dashboard logs only.
+ */
 async function applyRateLimitCooldown(u: BotUser): Promise<void> {
-  const duration = 5000 + Math.random() * 2000; // chaotic 5.0s–7.0s
-  const seconds = (duration / 1000).toFixed(2);
+  const duration = 10000; // FIXED 10s lock
   perUserCooldownUntil.set(u.id, Date.now() + duration);
-  await setStatus(u.id, "cooldown", `Cooling down ${seconds}s (rate limit)`);
-  const msg = `⚠️ [ANTI-FIREWALL] Slot ${u.slot} hit "Too many requests". Cooling down for ${seconds}s...`;
-  await log(u.id, u.slot, "warn", msg);
-  await sendDualTelegram(u, msg);
-  await sleep(duration);
+  await setStatus(u.id, "cooldown", `Cooling down 10.00s (rate limit)`);
+  await log(
+    u.id,
+    u.slot,
+    "warn",
+    `[ANTI-FIREWALL] Slot ${u.slot} hit "Too many requests". Execution LOCKED for 10s — no HTTP hits will be sent.`,
+  );
+  // Note: no sleep here. perUserCooldownUntil gates tickUser; the scheduler in
+  // runPollCycle will not dispatch this slot until the cooldown timestamp passes.
 }
 
 
