@@ -543,7 +543,10 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
           await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
         }
         ticks++;
-        s.nextAt = Date.now() + nextJitterMs(s.u.polling_interval_ms);
+        // If this slot just entered a cooldown lock, defer its next tick until
+        // the cooldown timestamp passes — no HTTP hits in the meantime.
+        const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
+        s.nextAt = Math.max(cooldownUntil, Date.now() + nextJitterMs(s.u.polling_interval_ms));
       }),
     );
   }
