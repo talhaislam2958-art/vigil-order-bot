@@ -405,6 +405,124 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
   );
 }
 
+function AdminTelegramPanel({ token }: { token: string }) {
+  const getFn = useServerFn(getAdminTelegramSettings);
+  const setFn = useServerFn(setAdminTelegramSettings);
+  const testFn = useServerFn(testAdminTelegram);
+  const [botToken, setBotToken] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    getFn({ data: { token } })
+      .then((r) => {
+        if (!alive) return;
+        setBotToken(r.bot_token || "");
+        setChatId(r.chat_id || "");
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+    return () => {
+      alive = false;
+    };
+  }, [token, getFn]);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await setFn({ data: { token, bot_token: botToken.trim(), chat_id: chatId.trim() } });
+      toast.success("Global admin Telegram saved · mirroring active");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function testIt() {
+    setTesting(true);
+    try {
+      await testFn({ data: { token } });
+      toast.success("Admin Telegram test sent");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const configured = !!(botToken && chatId);
+
+  return (
+    <div className="cyber-card w-full rounded-2xl p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex min-w-0 items-center gap-2">
+          <ShieldCheck className="size-4 shrink-0 neon-text" />
+          <h2 className="truncate text-xs font-bold uppercase tracking-widest">Global Admin Telegram</h2>
+        </div>
+        <span
+          className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest ${
+            configured ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "bg-muted text-muted-foreground"
+          }`}
+        >
+          {configured ? "Mirror ON" : "Mirror OFF"}
+        </span>
+      </div>
+      <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">
+        Mirrors every slot's notifications (detected · grabbed · skipped · cooldown) into one master admin chat.
+      </p>
+      <div className="space-y-2">
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Admin Bot Token
+          </span>
+          <input
+            value={botToken}
+            onChange={(e) => setBotToken(e.target.value)}
+            placeholder="123456:ABC-DEF…"
+            disabled={!loaded}
+            className="w-full rounded-md border border-border bg-input px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+            autoComplete="off"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+            Admin Chat ID
+          </span>
+          <input
+            value={chatId}
+            onChange={(e) => setChatId(e.target.value)}
+            placeholder="-1001234567890"
+            disabled={!loaded}
+            className="w-full rounded-md border border-border bg-input px-3 py-2 font-mono text-xs outline-none focus:ring-2 focus:ring-ring"
+            autoComplete="off"
+          />
+        </label>
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <button
+          onClick={testIt}
+          disabled={testing || !configured}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider hover:bg-surface-2 disabled:opacity-50"
+        >
+          {testing ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
+          Test
+        </button>
+        <button
+          onClick={save}
+          disabled={saving || !loaded}
+          className="neon-border inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function LogLine({ l }: { l: LogRow }) {
   const color =
     l.level === "error"
