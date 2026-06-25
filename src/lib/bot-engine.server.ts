@@ -80,6 +80,53 @@ export async function sendTelegram(
   }
 }
 
+// ----- Global admin Telegram (cached briefly) -----
+type AdminTg = { bot_token: string; chat_id: string };
+let adminTgCache: { val: AdminTg; at: number } | null = null;
+const ADMIN_TG_TTL_MS = 15_000;
+
+export async function getAdminTelegram(force = false): Promise<AdminTg> {
+  if (!force && adminTgCache && Date.now() - adminTgCache.at < ADMIN_TG_TTL_MS) return adminTgCache.val;
+  const { data } = await supabaseAdmin
+    .from("app_config")
+    .select("admin_telegram_bot_token, admin_telegram_chat_id")
+    .eq("id", 1)
+    .maybeSingle();
+  const val: AdminTg = {
+    bot_token: ((data as { admin_telegram_bot_token?: string } | null)?.admin_telegram_bot_token) || "",
+    chat_id: ((data as { admin_telegram_chat_id?: string } | null)?.admin_telegram_chat_id) || "",
+  };
+  adminTgCache = { val, at: Date.now() };
+  return val;
+}
+
+export function invalidateAdminTelegramCache() {
+  adminTgCache = null;
+}
+
+/**
+ * DUAL-LAYER Telegram routing.
+ * Sends the slot's own bot AND mirrors the same message to the global admin chat (prefixed
+ * with slot/user info), so the admin sees every notification across all 15 slots.
+ */
+export async function sendDualTelegram(
+  u: Pick<BotUser, "slot" | "label" | "username" | "telegram_bot_token" | "telegram_chat_id">,
+  text: string,
+  parse_mode: "HTML" | "Markdown" = "HTML",
+): Promise<void> {
+  if (u.telegram_bot_token && u.telegram_chat_id) {
+    void sendTelegram(u.telegram_bot_token, u.telegram_chat_id, text, parse_mode);
+  }
+  const admin = await getAdminTelegram();
+  if (admin.bot_token && admin.chat_id) {
+    const tag =
+      parse_mode === "HTML"
+        ? `📡 <b>[SLOT ${String(u.slot).padStart(2, "0")} · ${u.label || u.username || "—"}]</b>\n`
+        : `📡 *[SLOT ${String(u.slot).padStart(2, "0")} · ${u.label || u.username || "—"}]*\n`;
+    void sendTelegram(admin.bot_token, admin.chat_id, tag + text, parse_mode);
+  }
+}
+
 export async function loginUser(u: BotUser): Promise<string | null> {
   const r = await fetch(`${BASE}/login`, {
     method: "POST",
