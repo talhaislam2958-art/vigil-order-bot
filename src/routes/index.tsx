@@ -873,7 +873,7 @@ function UserCard({
                 className={input}
               />
             </Field>
-            <Field label="Polling INT (ms)">
+            <Field label="Max Interval (MS) [Dynamic Jitter Active]">
               <div className="relative">
                 <Gauge className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
                 <input
