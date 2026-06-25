@@ -35,6 +35,9 @@ import {
   clearLogs,
   manualPoll,
   deleteUser,
+  getAdminTelegramSettings,
+  setAdminTelegramSettings,
+  testAdminTelegram,
 } from "@/lib/admin.functions";
 
 export const Route = createFileRoute("/")({
