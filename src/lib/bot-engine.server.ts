@@ -4,7 +4,6 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
-const COOLDOWN_MS = 10_000;
 
 export type BotUser = {
   id: string;
