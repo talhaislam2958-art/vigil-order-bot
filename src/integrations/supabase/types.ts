@@ -34,6 +34,8 @@ export type Database = {
       }
       app_config: {
         Row: {
+          admin_telegram_bot_token: string
+          admin_telegram_chat_id: string
           created_at: string
           id: number
           master_password_hash: string | null
@@ -41,6 +43,8 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          admin_telegram_bot_token?: string
+          admin_telegram_chat_id?: string
           created_at?: string
           id?: number
           master_password_hash?: string | null
@@ -48,6 +52,8 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          admin_telegram_bot_token?: string
+          admin_telegram_chat_id?: string
           created_at?: string
           id?: number
           master_password_hash?: string | null
