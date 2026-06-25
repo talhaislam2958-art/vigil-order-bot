@@ -79,6 +79,62 @@ export const logoutMaster = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+// ----- Global admin Telegram settings -----
+
+export const getAdminTelegramSettings = createServerFn({ method: "POST" })
+  .inputValidator((d: { token: string }) => z.object({ token: z.string().uuid() }).parse(d))
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const supabaseAdmin = await getAdminClient();
+    const { data: row } = await supabaseAdmin
+      .from("app_config")
+      .select("admin_telegram_bot_token, admin_telegram_chat_id")
+      .eq("id", 1)
+      .maybeSingle();
+    return {
+      bot_token: (row?.admin_telegram_bot_token as string) || "",
+      chat_id: (row?.admin_telegram_chat_id as string) || "",
+    };
+  });
+
+export const setAdminTelegramSettings = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) =>
+    z
+      .object({
+        token: z.string().uuid(),
+        bot_token: z.string().max(300).default(""),
+        chat_id: z.string().max(100).default(""),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const supabaseAdmin = await getAdminClient();
+    await supabaseAdmin
+      .from("app_config")
+      .update({
+        admin_telegram_bot_token: data.bot_token,
+        admin_telegram_chat_id: data.chat_id,
+      } as never)
+      .eq("id", 1);
+    const { invalidateAdminTelegramCache } = await import("./bot-engine.server");
+    invalidateAdminTelegramCache();
+    return { ok: true };
+  });
+
+export const testAdminTelegram = createServerFn({ method: "POST" })
+  .inputValidator((d: { token: string }) => z.object({ token: z.string().uuid() }).parse(d))
+  .handler(async ({ data }) => {
+    await requireSession(data.token);
+    const { getAdminTelegram, sendTelegram } = await import("./bot-engine.server");
+    const a = await getAdminTelegram(true);
+    if (!a.bot_token || !a.chat_id) throw new Error("Admin Telegram not configured");
+    const r = await sendTelegram(a.bot_token, a.chat_id, "✅ <b>Global Admin Telegram</b> connected. You will now receive mirrored alerts from every active slot.");
+    if (!r.ok) throw new Error(r.error || "Telegram test failed");
+    return { ok: true };
+  });
+
+
 // ----- Bot users CRUD -----
 
 export const listUsers = createServerFn({ method: "POST" })

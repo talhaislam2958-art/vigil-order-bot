@@ -1,0 +1,1 @@
+ALTER TABLE public.app_config ADD COLUMN IF NOT EXISTS admin_telegram_bot_token text NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS admin_telegram_chat_id text NOT NULL DEFAULT '';

@@ -4,7 +4,6 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
-const COOLDOWN_MS = 10_000;
 
 export type BotUser = {
   id: string;
@@ -81,6 +80,53 @@ export async function sendTelegram(
   }
 }
 
+// ----- Global admin Telegram (cached briefly) -----
+type AdminTg = { bot_token: string; chat_id: string };
+let adminTgCache: { val: AdminTg; at: number } | null = null;
+const ADMIN_TG_TTL_MS = 15_000;
+
+export async function getAdminTelegram(force = false): Promise<AdminTg> {
+  if (!force && adminTgCache && Date.now() - adminTgCache.at < ADMIN_TG_TTL_MS) return adminTgCache.val;
+  const { data } = await supabaseAdmin
+    .from("app_config")
+    .select("admin_telegram_bot_token, admin_telegram_chat_id")
+    .eq("id", 1)
+    .maybeSingle();
+  const val: AdminTg = {
+    bot_token: ((data as { admin_telegram_bot_token?: string } | null)?.admin_telegram_bot_token) || "",
+    chat_id: ((data as { admin_telegram_chat_id?: string } | null)?.admin_telegram_chat_id) || "",
+  };
+  adminTgCache = { val, at: Date.now() };
+  return val;
+}
+
+export function invalidateAdminTelegramCache() {
+  adminTgCache = null;
+}
+
+/**
+ * DUAL-LAYER Telegram routing.
+ * Sends the slot's own bot AND mirrors the same message to the global admin chat (prefixed
+ * with slot/user info), so the admin sees every notification across all 15 slots.
+ */
+export async function sendDualTelegram(
+  u: Pick<BotUser, "slot" | "label" | "username" | "telegram_bot_token" | "telegram_chat_id">,
+  text: string,
+  parse_mode: "HTML" | "Markdown" = "HTML",
+): Promise<void> {
+  if (u.telegram_bot_token && u.telegram_chat_id) {
+    void sendTelegram(u.telegram_bot_token, u.telegram_chat_id, text, parse_mode);
+  }
+  const admin = await getAdminTelegram();
+  if (admin.bot_token && admin.chat_id) {
+    const tag =
+      parse_mode === "HTML"
+        ? `📡 <b>[SLOT ${String(u.slot).padStart(2, "0")} · ${u.label || u.username || "—"}]</b>\n`
+        : `📡 *[SLOT ${String(u.slot).padStart(2, "0")} · ${u.label || u.username || "—"}]*\n`;
+    void sendTelegram(admin.bot_token, admin.chat_id, tag + text, parse_mode);
+  }
+}
+
 export async function loginUser(u: BotUser): Promise<string | null> {
   const r = await fetch(`${BASE}/login`, {
     method: "POST",
@@ -137,9 +183,18 @@ const MOBILE_HEADERS = {
 };
 
 
-/** Exact polling interval as configured on the dashboard (no jitter, no fingerprint shifting). */
+/**
+ * CHAOTIC polling jitter — non-repeating per-tick float.
+ * Floor: 1000ms. Ceiling: user dashboard input (MAX).
+ * Each call returns a brand-new high-entropy Math.random() float, so no
+ * chronological sequence ever loops or repeats.
+ */
 export function nextJitterMs(baseMs: number): number {
-  return Math.max(200, baseMs || 4000);
+  const max = Math.max(1000, Math.round(baseMs || 4000));
+  if (max <= 1000) return 1000;
+  // Mix two random draws for extra entropy (XOR of mantissas).
+  const r = (Math.random() + Math.random() * 0.9173) % 1;
+  return 1000 + r * (max - 1000);
 }
 
 const perUserCooldownUntil = new Map<string, number>();
@@ -153,17 +208,18 @@ function hasTooManyRequests(payload: unknown, error?: string): boolean {
   return /too many requests/i.test(haystack);
 }
 
+/** Randomized per-slot cooldown 5000–7000ms. Brand-new value every trigger. */
 async function applyRateLimitCooldown(u: BotUser): Promise<void> {
-  perUserCooldownUntil.set(u.id, Date.now() + COOLDOWN_MS);
-  await setStatus(u.id, "cooldown", `Cooling down ${COOLDOWN_MS / 1000}s (rate limit)`);
-  await log(
-    u.id,
-    u.slot,
-    "warn",
-    `[ANTI-FIREWALL] Rate limit threshold approached. Cooling down for ${COOLDOWN_MS / 1000}s...`,
-  );
-  await sleep(COOLDOWN_MS);
+  const duration = 5000 + Math.random() * 2000; // chaotic 5.0s–7.0s
+  const seconds = (duration / 1000).toFixed(2);
+  perUserCooldownUntil.set(u.id, Date.now() + duration);
+  await setStatus(u.id, "cooldown", `Cooling down ${seconds}s (rate limit)`);
+  const msg = `⚠️ [ANTI-FIREWALL] Slot ${u.slot} hit "Too many requests". Cooling down for ${seconds}s...`;
+  await log(u.id, u.slot, "warn", msg);
+  await sendDualTelegram(u, msg);
+  await sleep(duration);
 }
+
 
 async function getOrderList(
   token: string,
@@ -383,10 +439,9 @@ export async function tickUser(u: BotUser): Promise<void> {
     }
     if (skipReason) {
       await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
-      await sendTelegram(
-        u.telegram_bot_token,
-        u.telegram_chat_id,
-        `⚠️ <b>Order skipped</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
+      await sendDualTelegram(
+        u,
+        `⚠️ <b>[ORDER SKIPPED]</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
       );
       continue;
     }
@@ -394,11 +449,12 @@ export async function tickUser(u: BotUser): Promise<void> {
     // INSTANT GRAB: fire receive immediately, before logs/telegram
     const grabStart = Date.now();
     const grabPromise = receiveOrder(token, o);
+    const detectionMsg = `🔎 <b>[ORDER DETECTED]</b>\nSlot/ID: <b>${u.label || u.username} (Slot ${u.slot})</b>\nOrder No: <code>${oid}</code>\nAmount: <b>${amt}</b> Riyals\nPayment: ${payLabel}\nStatus: Initiating immediate grab...`;
     await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
+    void sendDualTelegram(u, detectionMsg);
     const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
     void grabPromise.then(async (res) => {
       const grabMs = Date.now() - grabStart;
-      // STRICT: only an explicit code===200 from /order/receive counts as a confirmed grab.
       if (res.ok && res.code === 200) {
         await supabaseAdmin
           .from("bot_users")
@@ -411,10 +467,9 @@ export async function tickUser(u: BotUser): Promise<void> {
           "success",
           `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${grabMs}ms`,
         );
-        await sendTelegram(
-          u.telegram_bot_token,
-          u.telegram_chat_id,
-          `🚨 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
+        await sendDualTelegram(
+          u,
+          `🟢 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
             `Slot/ID: <b>${slotTag}</b>\n` +
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
@@ -430,18 +485,19 @@ export async function tickUser(u: BotUser): Promise<void> {
           "warn",
           `[GRAB MISSED] ${oid} · ${amt} SAR · ${payLabel} · code=${res.code ?? "n/a"} · reason="${rawMsg}"`,
         );
-        await sendTelegram(
-          u.telegram_bot_token,
-          u.telegram_chat_id,
+        await sendDualTelegram(
+          u,
           `⚠️ <b>[ORDER DETECTED BUT MISSED]</b>\n` +
             `Slot/ID: <b>${slotTag}</b>\n` +
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
             `Status: Detected on server but could not be received (Lost the race to another bot).\n` +
+            `Response Time: ${grabMs}ms\n` +
             `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
+
     });
   }
 
