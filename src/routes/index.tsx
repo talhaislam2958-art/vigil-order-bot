@@ -392,6 +392,7 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
               ))}
             </div>
           </div>
+          <AdminTelegramPanel token={token} />
           <div className="w-full rounded-xl border border-border/60 bg-surface/40 p-3 text-[11px] text-muted-foreground">
             <p className="font-bold uppercase tracking-widest text-foreground">⚡ 24/7 Cloud Engine</p>
             <p className="mt-1 font-mono">
