@@ -17,6 +17,7 @@ export type BotUser = {
   max_price: number;
   payment_methods: string[];
   polling_interval_ms: number;
+  cooldown_seconds: number;
   is_active: boolean;
   auth_token: string | null;
   auth_token_at: string | null;
@@ -105,9 +106,9 @@ export function invalidateAdminTelegramCache() {
 }
 
 /**
- * DUAL-LAYER Telegram routing.
- * Sends the slot's own bot AND mirrors the same message to the global admin chat (prefixed
- * with slot/user info), so the admin sees every notification across all 15 slots.
+ * DUAL-LAYER Telegram routing. Used ONLY for the three allowed order events:
+ * [ORDER GRABBED CONFIRMED], [ORDER SKIPPED], [ORDER DETECTED BUT MISSED].
+ * Never invoked for cooldown / hit-success / polling status.
  */
 export async function sendDualTelegram(
   u: Pick<BotUser, "slot" | "label" | "username" | "telegram_bot_token" | "telegram_chat_id">,
@@ -145,11 +146,6 @@ export async function loginUser(u: BotUser): Promise<string | null> {
       })
       .eq("id", u.id);
     await log(u.id, u.slot, "success", "Login OK, token refreshed");
-    await sendTelegram(
-      u.telegram_bot_token,
-      u.telegram_chat_id,
-      `✅ User <b>${u.label || u.username}</b> session refreshed and actively monitoring orders.`,
-    );
     return j.token;
   }
   const msg = (j.msg || "").toLowerCase();
@@ -166,6 +162,12 @@ export async function loginUser(u: BotUser): Promise<string | null> {
   return null;
 }
 
+/**
+ * Mobile signature + KEEP-ALIVE / NO-CACHE headers. The Worker fetch runtime
+ * pools sockets transparently when Connection: keep-alive is sent, reusing the
+ * same TCP connection for back-to-back requests against the same origin and
+ * blinding the per-connection firewall counter for this slot's burst.
+ */
 const MOBILE_HEADERS = {
   Accept: "application/json, text/plain, */*",
   "Content-Type": "application/json;charset=utf-8",
@@ -180,22 +182,11 @@ const MOBILE_HEADERS = {
   "Sec-Fetch-Dest": "empty",
   "Sec-Fetch-Mode": "cors",
   "Sec-Fetch-Site": "same-origin",
+  Connection: "keep-alive",
+  "Keep-Alive": "timeout=60, max=1000",
+  "Cache-Control": "no-cache, no-store, must-revalidate",
+  Pragma: "no-cache",
 };
-
-
-/**
- * CHAOTIC polling jitter — non-repeating per-tick float.
- * Floor: 1000ms. Ceiling: user dashboard input (MAX).
- * Each call returns a brand-new high-entropy Math.random() float, so no
- * chronological sequence ever loops or repeats.
- */
-export function nextJitterMs(baseMs: number): number {
-  const max = Math.max(1000, Math.round(baseMs || 4000));
-  if (max <= 1000) return 1000;
-  // Mix two random draws for extra entropy (XOR of mantissas).
-  const r = (Math.random() + Math.random() * 0.9173) % 1;
-  return 1000 + r * (max - 1000);
-}
 
 const perUserCooldownUntil = new Map<string, number>();
 
@@ -209,25 +200,39 @@ function hasTooManyRequests(payload: unknown, error?: string): boolean {
 }
 
 /**
- * STRICT 10-second execution lock per slot. No HTTP requests are issued for this
- * slot during the cooldown window (enforced by perUserCooldownUntil check in tickUser
- * and by skipping the slot's scheduling in runPollCycle).
- * NO Telegram notifications are sent for cooldown events — dashboard logs only.
+ * Explicit "order is gone / taken by someone else" detection. Only these
+ * messages allow the aggressive grab loop to break.
+ */
+function isOrderGoneMessage(msg: string | undefined, code: number | undefined): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    /already\s*(received|claimed|taken|grabbed|accept)/.test(m) ||
+    /has\s*been\s*(received|claimed|taken|grabbed)/.test(m) ||
+    /received\s*by/.test(m) ||
+    /no\s*longer\s*available/.test(m) ||
+    /not\s*exist|does\s*not\s*exist|order\s*not\s*found/.test(m) ||
+    /已被领取|已被抢|已被接|订单不存在|已领取|已被他人/.test(msg) ||
+    code === 404
+  );
+}
+
+/**
+ * STRICT execution lock per slot for `cooldown_seconds` (user-editable).
+ * No HTTP requests are issued during the lock. NO Telegram notifications.
  */
 async function applyRateLimitCooldown(u: BotUser): Promise<void> {
-  const duration = 10000; // FIXED 10s lock
+  const secs = Math.max(1, Math.round(u.cooldown_seconds || 10));
+  const duration = secs * 1000;
   perUserCooldownUntil.set(u.id, Date.now() + duration);
-  await setStatus(u.id, "cooldown", `Cooling down 10.00s (rate limit)`);
+  await setStatus(u.id, "cooldown", `Cooling down ${secs}s (rate limit)`);
   await log(
     u.id,
     u.slot,
-    "warn",
-    `[ANTI-FIREWALL] Slot ${u.slot} hit "Too many requests". Execution LOCKED for 10s — no HTTP hits will be sent.`,
+    "error",
+    `[Firewall Blocked] - Too Many Requests - Entering Cooldown for ${secs} Seconds`,
   );
-  // Note: no sleep here. perUserCooldownUntil gates tickUser; the scheduler in
-  // runPollCycle will not dispatch this slot until the cooldown timestamp passes.
 }
-
 
 async function getOrderList(
   token: string,
@@ -243,6 +248,8 @@ async function getOrderList(
         Authorization: `Bearer ${token}`,
         ...MOBILE_HEADERS,
       },
+      // Hint the runtime to reuse the pooled TCP connection.
+      keepalive: true,
     });
     const text = await r.text();
     let j: unknown = {};
@@ -291,14 +298,11 @@ function pickPayment(o: OrderRow): string {
   return String(o.payType ?? o.payment ?? o.paymentMethod ?? "").toLowerCase();
 }
 function pickOrderId(o: OrderRow): string {
-  // Real server uses orderNo (e.g. "WO20678984955..."). Fall back to other keys.
   return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
 
-async function receiveOrder(token: string, order: OrderRow) {
+async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
-    // CRITICAL: the live endpoint expects the FULL order object as body (Content-Length ~736),
-    // not {orderId}. Captured from production DevTools.
     const r = await fetch(`${BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
@@ -306,6 +310,7 @@ async function receiveOrder(token: string, order: OrderRow) {
         ...MOBILE_HEADERS,
       },
       body: JSON.stringify(order),
+      keepalive: true,
     });
     const text = await r.text();
     let j: { code?: number; msg?: string } = {};
@@ -314,19 +319,79 @@ async function receiveOrder(token: string, order: OrderRow) {
     } catch {
       j = { msg: text.slice(0, 200) };
     }
-    // STRICT confirmation: ONLY treat code === 200 as a true server-confirmed grab.
-    // HTTP 2xx without code === 200 is NOT a confirmed capture (server uses code in body).
     const confirmed = j.code === 200;
     return { status: r.status, ok: confirmed, code: j.code, msg: j.msg, raw: text };
   } catch (e) {
-    return { status: 0, ok: false, code: undefined, msg: e instanceof Error ? e.message : String(e), raw: "" };
+    return { status: 0, ok: false, code: undefined as number | undefined, msg: e instanceof Error ? e.message : String(e), raw: "" };
   }
+}
+
+/**
+ * AGGRESSIVE GRAB LOOP — pounds the /receive endpoint for the specific order
+ * until either:
+ *   • the server explicitly confirms success (code 200), OR
+ *   • the server explicitly says the order is gone / taken by another user.
+ *
+ * Generic HTTP 500s, network blips, parse errors, or "too many requests"
+ * during the grab burst do NOT break the loop — the bot keeps trying.
+ *
+ * Hard safety caps prevent a runaway: max ~12s wall-time and 240 attempts,
+ * which is well past the realistic life of a fresh order on this platform.
+ */
+async function aggressiveGrab(
+  u: BotUser,
+  token: string,
+  order: OrderRow,
+  oid: string,
+): Promise<{ ok: boolean; code?: number; msg?: string; attempts: number; ms: number }> {
+  const start = Date.now();
+  const MAX_MS = 12_000;
+  const MAX_ATTEMPTS = 240;
+  let attempts = 0;
+  let last: Awaited<ReturnType<typeof receiveOrderOnce>> | null = null;
+
+  while (Date.now() - start < MAX_MS && attempts < MAX_ATTEMPTS) {
+    attempts++;
+    const res = await receiveOrderOnce(token, order);
+    last = res;
+
+    // SUCCESS — server confirmed grab.
+    if (res.ok && res.code === 200) {
+      return { ok: true, code: res.code, msg: res.msg, attempts, ms: Date.now() - start };
+    }
+
+    // EXPLICIT FAILURE — order is gone / claimed by someone else. Break.
+    if (isOrderGoneMessage(res.msg, res.code)) {
+      return { ok: false, code: res.code, msg: res.msg, attempts, ms: Date.now() - start };
+    }
+
+    // Anything else (HTTP 500, "Too many requests" during burst, network errors,
+    // unknown codes) → keep pounding immediately. Tiny breather so we don't
+    // monopolize the event loop on a hot failure path.
+    if (attempts % 8 === 0) {
+      await log(
+        u.id,
+        u.slot,
+        "warn",
+        `[GRAB RETRY] ${oid} · attempt ${attempts} · code=${res.code ?? "n/a"} · "${(res.msg || "").slice(0, 80)}" — retrying...`,
+      );
+    }
+    await sleep(25);
+  }
+
+  return {
+    ok: false,
+    code: last?.code,
+    msg: last?.msg || "grab loop exhausted (timeout)",
+    attempts,
+    ms: Date.now() - start,
+  };
 }
 
 /** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
 export async function tickUser(u: BotUser): Promise<void> {
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
-  if (cooldownUntil > Date.now()) return; // honor per-user cooldown
+  if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
 
   let token = u.auth_token;
   if (!token) {
@@ -338,7 +403,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET ${BASE}/bus/user/order/list (real fetch)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list (keep-alive · no-cache)`,
   );
   let list = await getOrderList(token);
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
@@ -348,7 +413,6 @@ export async function tickUser(u: BotUser): Promise<void> {
     list = await getOrderList(token);
   }
 
-  // Always print the exact raw server response for every fetch — 1:1 with the [POLLING] line above.
   const rawText =
     typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
   const rawSnippet = rawText.length > 1200 ? rawText.slice(0, 1200) + "…" : rawText;
@@ -386,10 +450,9 @@ export async function tickUser(u: BotUser): Promise<void> {
   await log(
     u.id,
     u.slot,
-    "info",
-    `[HTTP 200] Slot ${u.slot} · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
+    "success",
+    `[Hit Success] - Connection Reused - Status 200 OK - Fetched Fresh Order List · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
   );
-
 
   if (list.orders.length === 0) {
     await supabaseAdmin
@@ -400,8 +463,6 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 
   const orders = list.orders;
-  const responseMs = list.ms;
-
   const seen = new Set(u.seen_order_ids || []);
   const aliasMap: Record<string, string[]> = {
     "stc pay": ["stc", "stcpay"],
@@ -438,6 +499,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     const pay = pickPayment(o);
     const payLabel = friendly(pay);
     const userTag = u.label || u.username;
+    const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
 
     let skipReason = "";
     if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
@@ -454,16 +516,13 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    // INSTANT GRAB: fire receive immediately, before logs/telegram
-    const grabStart = Date.now();
-    const grabPromise = receiveOrder(token, o);
-    const detectionMsg = `🔎 <b>[ORDER DETECTED]</b>\nSlot/ID: <b>${u.label || u.username} (Slot ${u.slot})</b>\nOrder No: <code>${oid}</code>\nAmount: <b>${amt}</b> Riyals\nPayment: ${payLabel}\nStatus: Initiating immediate grab...`;
-    await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found, initiating immediate grab!`);
-    void sendDualTelegram(u, detectionMsg);
-    const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
-    void grabPromise.then(async (res) => {
-      const grabMs = Date.now() - grabStart;
-      if (res.ok && res.code === 200) {
+    await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — entering AGGRESSIVE GRAB LOOP`);
+
+    // Fire the aggressive grab loop in the background so the polling cycle is
+    // not blocked. The loop itself never gives up unless the server explicitly
+    // confirms success or says the order is gone.
+    void aggressiveGrab(u, token, o, oid).then(async (res) => {
+      if (res.ok) {
         await supabaseAdmin
           .from("bot_users")
           .update({ orders_grabbed: (u.orders_grabbed || 0) + 1 })
@@ -473,7 +532,7 @@ export async function tickUser(u: BotUser): Promise<void> {
           u.id,
           u.slot,
           "success",
-          `[GRAB CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · server msg="${res.msg ?? ""}" · ${grabMs}ms`,
+          `[ORDER GRABBED CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · ${res.ms}ms`,
         );
         await sendDualTelegram(
           u,
@@ -483,15 +542,16 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
             `Status: 100% Successfully Saved to Account!\n` +
-            `Response Time: ${grabMs}ms`,
+            `Attempts: ${res.attempts}\n` +
+            `Response Time: ${res.ms}ms`,
         );
       } else {
-        const rawMsg = res.msg || `HTTP ${res.status}`;
+        const rawMsg = res.msg || `code ${res.code ?? "n/a"}`;
         await log(
           u.id,
           u.slot,
           "warn",
-          `[GRAB MISSED] ${oid} · ${amt} SAR · ${payLabel} · code=${res.code ?? "n/a"} · reason="${rawMsg}"`,
+          `[ORDER DETECTED BUT MISSED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · reason="${rawMsg}"`,
         );
         await sendDualTelegram(
           u,
@@ -500,12 +560,12 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
-            `Status: Detected on server but could not be received (Lost the race to another bot).\n` +
-            `Response Time: ${grabMs}ms\n` +
+            `Status: Server confirmed order is no longer available (claimed elsewhere).\n` +
+            `Attempts: ${res.attempts}\n` +
+            `Response Time: ${res.ms}ms\n` +
             `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
-
     });
   }
 
@@ -515,7 +575,10 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 }
 
-/** Polls every active user with adaptive per-user jitter until budget exhausted. */
+/**
+ * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
+ * `polling_interval_ms`. No Math.random(), no jitter, no variation.
+ */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
   const start = Date.now();
   const { data: users, error } = await supabaseAdmin
@@ -543,10 +606,10 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
           await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
         }
         ticks++;
-        // If this slot just entered a cooldown lock, defer its next tick until
-        // the cooldown timestamp passes — no HTTP hits in the meantime.
         const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
-        s.nextAt = Math.max(cooldownUntil, Date.now() + nextJitterMs(s.u.polling_interval_ms));
+        const fixedInterval = Math.max(200, Math.round(s.u.polling_interval_ms || 1000));
+        // STRICT FIXED — exact interval, no jitter.
+        s.nextAt = Math.max(cooldownUntil, Date.now() + fixedInterval);
       }),
     );
   }
