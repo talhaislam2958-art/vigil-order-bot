@@ -166,6 +166,7 @@ const updateSchema = z.object({
       max_price: z.number().min(0).max(1e9).optional(),
       payment_methods: z.array(z.string().max(40)).max(20).optional(),
       polling_interval_ms: z.number().int().min(200).max(60000).optional(),
+      cooldown_seconds: z.number().int().min(1).max(300).optional(),
       is_active: z.boolean().optional(),
     })
     .strict(),
