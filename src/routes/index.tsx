@@ -714,8 +714,7 @@ function UserCard({
     setF("payment_methods", Array.from(cur));
   };
 
-  // Polling interval stored as ms; displayed/edited in seconds
-  const intervalSec = (v.polling_interval_ms ?? 1000) / 1000;
+  const cooldownSec = (v as BotUser & { cooldown_seconds?: number }).cooldown_seconds ?? 10;
 
   const step1State: "done" | "active" | "locked" = isVerified ? "done" : "active";
   const step2State: "done" | "active" | "locked" = !isVerified ? "locked" : v.is_active ? "done" : "active";
