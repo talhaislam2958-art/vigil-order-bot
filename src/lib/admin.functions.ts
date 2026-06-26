@@ -362,6 +362,7 @@ export const deleteUser = createServerFn({ method: "POST" })
         max_price: 999999,
         payment_methods: [],
         polling_interval_ms: 1000,
+        cooldown_seconds: 10,
         is_active: false,
         auth_token: null,
         auth_token_at: null,
