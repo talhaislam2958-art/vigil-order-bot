@@ -104,6 +104,7 @@ export type Database = {
         Row: {
           auth_token: string | null
           auth_token_at: string | null
+          cooldown_seconds: number
           created_at: string
           id: string
           is_active: boolean
@@ -127,6 +128,7 @@ export type Database = {
         Insert: {
           auth_token?: string | null
           auth_token_at?: string | null
+          cooldown_seconds?: number
           created_at?: string
           id?: string
           is_active?: boolean
@@ -150,6 +152,7 @@ export type Database = {
         Update: {
           auth_token?: string | null
           auth_token_at?: string | null
+          cooldown_seconds?: number
           created_at?: string
           id?: string
           is_active?: boolean
