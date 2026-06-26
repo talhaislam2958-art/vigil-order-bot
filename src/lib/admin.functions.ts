@@ -145,7 +145,7 @@ export const listUsers = createServerFn({ method: "POST" })
     const { data: rows, error } = await supabaseAdmin
       .from("bot_users")
       .select(
-        "id,slot,label,username,password,telegram_bot_token,telegram_chat_id,min_price,max_price,payment_methods,polling_interval_ms,is_active,status,status_message,last_polled_at,orders_grabbed,auth_token_at",
+        "id,slot,label,username,password,telegram_bot_token,telegram_chat_id,min_price,max_price,payment_methods,polling_interval_ms,cooldown_seconds,is_active,status,status_message,last_polled_at,orders_grabbed,auth_token_at",
       )
       .order("slot", { ascending: true });
     if (error) throw new Error(error.message);
@@ -166,6 +166,7 @@ const updateSchema = z.object({
       max_price: z.number().min(0).max(1e9).optional(),
       payment_methods: z.array(z.string().max(40)).max(20).optional(),
       polling_interval_ms: z.number().int().min(200).max(60000).optional(),
+      cooldown_seconds: z.number().int().min(1).max(300).optional(),
       is_active: z.boolean().optional(),
     })
     .strict(),
@@ -361,6 +362,7 @@ export const deleteUser = createServerFn({ method: "POST" })
         max_price: 999999,
         payment_methods: [],
         polling_interval_ms: 1000,
+        cooldown_seconds: 10,
         is_active: false,
         auth_token: null,
         auth_token_at: null,
