@@ -331,9 +331,34 @@ function focusIndex(userId: string, tokenIndex: number): void {
   if (pos >= 0) currentIndex.set(userId, pos);
 }
 
+// ---- Global outbound request throttle (list endpoint) ----
+// The upstream rate-limits by IP, and all slots share the worker's IP.
+// Serialize list fetches with a minimum gap so N concurrent slots never
+// burst the server. Receive (grab) requests intentionally bypass this.
+const LIST_MIN_GAP_MS = 400;
+let listGateChain: Promise<void> = Promise.resolve();
+let listLastAt = 0;
+function acquireListSlot(): Promise<void> {
+  const prev = listGateChain;
+  let release!: () => void;
+  const next = new Promise<void>((res) => (release = res));
+  listGateChain = prev.then(() => next);
+  return prev.then(async () => {
+    const wait = LIST_MIN_GAP_MS - (Date.now() - listLastAt);
+    if (wait > 0) await sleep(wait);
+    listLastAt = Date.now();
+    // Caller must call release() when the fetch completes.
+    (acquireListSlot as unknown as { _release?: () => void })._release = release;
+    return;
+  });
+}
+
 async function getOrderList(
   token: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
+  await acquireListSlot();
+  const release = (acquireListSlot as unknown as { _release: () => void })._release;
+
   const t0 = Date.now();
   try {
     const url =
