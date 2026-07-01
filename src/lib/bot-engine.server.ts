@@ -234,6 +234,103 @@ async function applyRateLimitCooldown(u: BotUser): Promise<void> {
   );
 }
 
+// ============================================================================
+// MULTI-SESSION ROTATION ENGINE (10 parallel tokens, pre-emptive hot-swap)
+// ============================================================================
+const POOL_SIZE = 10;
+const POOL_HIT_LIMIT = 5;
+const TOKEN_COOLDOWN_MS = 30_000;
+
+type PoolToken = { token: string; hits: number; cooldownUntil: number; index: number };
+
+const tokenPools = new Map<string, PoolToken[]>();
+const currentIndex = new Map<string, number>();
+const poolBuilding = new Map<string, Promise<PoolToken[] | null>>();
+
+export function clearTokenPool(userId: string): void {
+  tokenPools.delete(userId);
+  currentIndex.delete(userId);
+  poolBuilding.delete(userId);
+  perUserCooldownUntil.delete(userId);
+}
+
+async function rawLogin(u: BotUser): Promise<string | null> {
+  try {
+    const r = await fetch(`${BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u.username, password: u.password }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { token?: string };
+    return j.token || null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildTokenPool(u: BotUser): Promise<PoolToken[] | null> {
+  const existing = poolBuilding.get(u.id);
+  if (existing) return existing;
+  const p = (async () => {
+    const tokens: PoolToken[] = [];
+    for (let i = 0; i < POOL_SIZE; i++) {
+      const t = await rawLogin(u);
+      if (t) tokens.push({ token: t, hits: 0, cooldownUntil: 0, index: tokens.length + 1 });
+      await sleep(150);
+    }
+    if (tokens.length === 0) return null;
+    tokenPools.set(u.id, tokens);
+    currentIndex.set(u.id, 0);
+    await log(
+      u.id,
+      u.slot,
+      "success",
+      `[ENGINE STATUS] - Multi-Session pool initialized: ${tokens.length}/${POOL_SIZE} tokens ready.`,
+    );
+    return tokens;
+  })();
+  poolBuilding.set(u.id, p);
+  try {
+    return await p;
+  } finally {
+    poolBuilding.delete(u.id);
+  }
+}
+
+function pickHealthyToken(userId: string): PoolToken | null {
+  const pool = tokenPools.get(userId);
+  if (!pool || pool.length === 0) return null;
+  const now = Date.now();
+  const start = currentIndex.get(userId) ?? 0;
+  for (let i = 0; i < pool.length; i++) {
+    const pos = (start + i) % pool.length;
+    if (pool[pos].cooldownUntil <= now) {
+      currentIndex.set(userId, pos);
+      return pool[pos];
+    }
+  }
+  return null;
+}
+
+function nextHealthyIndex(userId: string, current: PoolToken): number | null {
+  const pool = tokenPools.get(userId);
+  if (!pool) return null;
+  const start = pool.findIndex((p) => p === current);
+  const now = Date.now();
+  for (let i = 1; i <= pool.length; i++) {
+    const cand = pool[(start + i) % pool.length];
+    if (cand.cooldownUntil <= now) return cand.index;
+  }
+  return null;
+}
+
+function focusIndex(userId: string, tokenIndex: number): void {
+  const pool = tokenPools.get(userId);
+  if (!pool) return;
+  const pos = pool.findIndex((p) => p.index === tokenIndex);
+  if (pos >= 0) currentIndex.set(userId, pos);
+}
+
 async function getOrderList(
   token: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
@@ -388,56 +485,136 @@ async function aggressiveGrab(
   };
 }
 
-/** Run one polling tick for one user. Re-logins automatically on 401/token errors. */
+/**
+ * Run one polling tick for one user.
+ *
+ * Uses the MULTI-SESSION rotation engine when a token pool is available:
+ *   - Each poll uses one selected token from the 10-token rotation array.
+ *   - A healthy token continues polling until it reaches 5 successful hits, then rotates.
+ *   - Any error (HTTP 500 / "Too many requests" / non-200 / rate-limit) triggers
+ *     a PRE-EMPTIVE hot-swap: that token is marked cooldown (30s), engine
+ *     instantly moves to the next healthy token on the very next tick.
+ *
+ * Falls back to STABLE SINGLE-SESSION mode when the entire pool is exhausted
+ * or cannot be built, preserving uptime.
+ */
 export async function tickUser(u: BotUser): Promise<void> {
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
   if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
 
-  let token = u.auth_token;
-  if (!token) {
-    token = await loginUser(u);
-    if (!token) return;
+  // ---- Build the 10-token pool on first tick ---------------------------------
+  let pool = tokenPools.get(u.id);
+  if (!pool) {
+    await log(
+      u.id,
+      u.slot,
+      "info",
+      `[ENGINE STATUS] - Initializing Multi-Session engine (10 parallel tokens)...`,
+    );
+    const built = await buildTokenPool(u);
+    pool = built ?? undefined;
   }
 
+  // ---- Pick a healthy token from the pool (pre-emptive rotation) -------------
+  const selected: PoolToken | null = pool && pool.length > 0 ? pickHealthyToken(u.id) : null;
+  let token: string | null;
+  let multiSession = false;
+
+  if (selected) {
+    token = selected.token;
+    multiSession = true;
+  } else {
+    if (pool && pool.length > 0) {
+      await log(
+        u.id,
+        u.slot,
+        "error",
+        `[CRITICAL WARNING] - Multi-Session failed. Reverting to Stable Single-Session engine.`,
+      );
+    }
+    token = u.auth_token;
+    if (!token) {
+      token = await loginUser(u);
+      if (!token) return;
+    }
+  }
+
+  const tokenTag = selected ? `Token #${selected.index}/${pool!.length}` : `Single-Session`;
   await log(
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list (keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
   );
+
   let list = await getOrderList(token);
+
+  // ---- 401 handling: refresh the specific token slot (or single-session) -----
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
-    await log(u.id, u.slot, "warn", `[SERVER ALERT] Slot ${u.slot} token expired (401). Re-logging in.`);
-    token = await loginUser(u);
-    if (!token) return;
-    list = await getOrderList(token);
+    await log(u.id, u.slot, "warn", `[SERVER ALERT] Slot ${u.slot} · ${tokenTag} token expired (401). Re-logging in.`);
+    if (selected) {
+      const fresh = await rawLogin(u);
+      if (fresh) {
+        selected.token = fresh;
+        selected.hits = 0;
+        token = fresh;
+        list = await getOrderList(token);
+      } else {
+        selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
+        return;
+      }
+    } else {
+      token = await loginUser(u);
+      if (!token) return;
+      list = await getOrderList(token);
+    }
   }
 
-  const rawText =
-    typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
-  const rawSnippet = rawText.length > 1200 ? rawText.slice(0, 1200) + "…" : rawText;
+  const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
+  const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
   const serverMsg = (list.raw as { msg?: string } | null)?.msg ?? "";
+  const innerCode = (list.raw as { code?: number } | null)?.code;
+  const isError =
+    list.rateLimited ||
+    list.status !== 200 ||
+    (innerCode !== undefined && innerCode !== 200);
 
-  if (list.error && list.status !== 200) {
+  // ---- PRE-EMPTIVE SWAP path (multi-session) ---------------------------------
+  if (isError && selected) {
+    const nextIdx = nextHealthyIndex(u.id, selected);
+    const responseText = serverMsg || list.error || `HTTP ${list.status}`;
     await log(
       u.id,
       u.slot,
       "error",
-      `[API ERROR] Slot ${u.slot} HTTP ${list.status} · ${list.ms}ms · ${list.error}`,
+      `[SERVER RESPONSE] - Token #${selected.index} hit a block at ${selected.hits} hits. Response: ${responseText}. ` +
+        (nextIdx
+          ? `Swapping to Token #${nextIdx} immediately...`
+          : `All tokens on cooldown — will fallback to Single-Session next tick.`) +
+        ` · [RAW DATA]: ${rawSnippet}`,
     );
-  }
-
-  if (list.rateLimited || list.status === 429 || (list.status === 500 && hasTooManyRequests(list.raw, list.error))) {
-    await log(
-      u.id,
-      u.slot,
-      "error",
-      `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) · [RAW DATA]: ${rawSnippet}`,
-    );
-    await applyRateLimitCooldown(u);
+    selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
+    selected.hits = 0;
+    if (nextIdx) focusIndex(u.id, nextIdx);
     return;
   }
-  if (list.status !== 200) {
+
+  // ---- Single-session error handling (preserves prior behaviour) -------------
+  if (isError) {
+    if (
+      list.rateLimited ||
+      list.status === 429 ||
+      (list.status === 500 && hasTooManyRequests(list.raw, list.error))
+    ) {
+      await log(
+        u.id,
+        u.slot,
+        "error",
+        `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) · [RAW DATA]: ${rawSnippet}`,
+      );
+      await applyRateLimitCooldown(u);
+      return;
+    }
     await log(
       u.id,
       u.slot,
@@ -447,12 +624,36 @@ export async function tickUser(u: BotUser): Promise<void> {
     return;
   }
 
-  await log(
-    u.id,
-    u.slot,
-    "success",
-    `[Hit Success] - Connection Reused - Status 200 OK - Fetched Fresh Order List · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
-  );
+  // ---- SUCCESS ---------------------------------------------------------------
+  if (selected) {
+    selected.hits += 1;
+    await log(
+      u.id,
+      u.slot,
+      "success",
+      `[ENGINE STATUS] - Token #${selected.index} active (1-${pool!.length}). Hits: ${selected.hits}/${POOL_HIT_LIMIT}. · ${list.ms}ms · rows=${list.orders.length}`,
+    );
+    if (selected.hits >= POOL_HIT_LIMIT) {
+      const nextIdx = nextHealthyIndex(u.id, selected);
+      selected.hits = 0;
+      if (nextIdx) {
+        focusIndex(u.id, nextIdx);
+        await log(
+          u.id,
+          u.slot,
+          "info",
+          `[ENGINE STATUS] - Token #${selected.index} reached ${POOL_HIT_LIMIT}/${POOL_HIT_LIMIT} hit limit. Rotating forward to Token #${nextIdx}.`,
+        );
+      }
+    }
+  } else {
+    await log(
+      u.id,
+      u.slot,
+      "success",
+      `[Hit Success] - Single-Session · Status 200 OK · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
+    );
+  }
 
   if (list.orders.length === 0) {
     await supabaseAdmin
