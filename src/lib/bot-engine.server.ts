@@ -811,8 +811,13 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     .eq("is_active", true);
   if (error || !users) return { ticked: 0 };
 
-  const state = users.map((u) => ({ u: u as BotUser, nextAt: 0 }));
+  // Stagger initial start per slot so N active slots don't all fire at t=0.
+  // Combined with the global list-request gate, this smooths the outbound
+  // request stream across the shared worker IP.
+  const stagger = LIST_MIN_GAP_MS;
+  const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
   let ticks = 0;
+
 
   while (Date.now() - start < budgetMs) {
     const now = Date.now();
