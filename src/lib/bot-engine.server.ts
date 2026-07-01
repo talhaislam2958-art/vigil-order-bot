@@ -334,31 +334,27 @@ function focusIndex(userId: string, tokenIndex: number): void {
 // ---- Global outbound request throttle (list endpoint) ----
 // The upstream rate-limits by IP, and all slots share the worker's IP.
 // Serialize list fetches with a minimum gap so N concurrent slots never
-// burst the server. Receive (grab) requests intentionally bypass this.
+// burst the server. Receive (grab) requests intentionally bypass this so
+// a detected order still gets an aggressive burst.
 const LIST_MIN_GAP_MS = 400;
 let listGateChain: Promise<void> = Promise.resolve();
 let listLastAt = 0;
-function acquireListSlot(): Promise<void> {
-  const prev = listGateChain;
+function acquireListSlot(): Promise<() => void> {
   let release!: () => void;
-  const next = new Promise<void>((res) => (release = res));
-  listGateChain = prev.then(() => next);
-  return prev.then(async () => {
-    const wait = LIST_MIN_GAP_MS - (Date.now() - listLastAt);
-    if (wait > 0) await sleep(wait);
+  const held = new Promise<void>((res) => (release = res));
+  const wait = listGateChain.then(async () => {
+    const gap = LIST_MIN_GAP_MS - (Date.now() - listLastAt);
+    if (gap > 0) await sleep(gap);
     listLastAt = Date.now();
-    // Caller must call release() when the fetch completes.
-    (acquireListSlot as unknown as { _release?: () => void })._release = release;
-    return;
   });
+  listGateChain = wait.then(() => held);
+  return wait.then(() => release);
 }
 
 async function getOrderList(
   token: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
-  await acquireListSlot();
-  const release = (acquireListSlot as unknown as { _release: () => void })._release;
-
+  const release = await acquireListSlot();
   const t0 = Date.now();
   try {
     const url =
@@ -370,7 +366,6 @@ async function getOrderList(
         Authorization: `Bearer ${token}`,
         ...MOBILE_HEADERS,
       },
-      // Hint the runtime to reuse the pooled TCP connection.
       keepalive: true,
     });
     const text = await r.text();
@@ -393,8 +388,11 @@ async function getOrderList(
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
+  } finally {
+    release();
   }
 }
+
 
 type OrderRow = {
   orderId?: string | number;
