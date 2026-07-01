@@ -234,6 +234,103 @@ async function applyRateLimitCooldown(u: BotUser): Promise<void> {
   );
 }
 
+// ============================================================================
+// MULTI-SESSION ROTATION ENGINE (10 parallel tokens, pre-emptive hot-swap)
+// ============================================================================
+const POOL_SIZE = 10;
+const POOL_HIT_LIMIT = 5;
+const TOKEN_COOLDOWN_MS = 30_000;
+
+type PoolToken = { token: string; hits: number; cooldownUntil: number; index: number };
+
+const tokenPools = new Map<string, PoolToken[]>();
+const currentIndex = new Map<string, number>();
+const poolBuilding = new Map<string, Promise<PoolToken[] | null>>();
+
+export function clearTokenPool(userId: string): void {
+  tokenPools.delete(userId);
+  currentIndex.delete(userId);
+  poolBuilding.delete(userId);
+  perUserCooldownUntil.delete(userId);
+}
+
+async function rawLogin(u: BotUser): Promise<string | null> {
+  try {
+    const r = await fetch(`${BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u.username, password: u.password }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { token?: string };
+    return j.token || null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildTokenPool(u: BotUser): Promise<PoolToken[] | null> {
+  const existing = poolBuilding.get(u.id);
+  if (existing) return existing;
+  const p = (async () => {
+    const tokens: PoolToken[] = [];
+    for (let i = 0; i < POOL_SIZE; i++) {
+      const t = await rawLogin(u);
+      if (t) tokens.push({ token: t, hits: 0, cooldownUntil: 0, index: tokens.length + 1 });
+      await sleep(150);
+    }
+    if (tokens.length === 0) return null;
+    tokenPools.set(u.id, tokens);
+    currentIndex.set(u.id, 0);
+    await log(
+      u.id,
+      u.slot,
+      "success",
+      `[ENGINE STATUS] - Multi-Session pool initialized: ${tokens.length}/${POOL_SIZE} tokens ready.`,
+    );
+    return tokens;
+  })();
+  poolBuilding.set(u.id, p);
+  try {
+    return await p;
+  } finally {
+    poolBuilding.delete(u.id);
+  }
+}
+
+function pickHealthyToken(userId: string): PoolToken | null {
+  const pool = tokenPools.get(userId);
+  if (!pool || pool.length === 0) return null;
+  const now = Date.now();
+  const start = currentIndex.get(userId) ?? 0;
+  for (let i = 0; i < pool.length; i++) {
+    const pos = (start + i) % pool.length;
+    if (pool[pos].cooldownUntil <= now) {
+      currentIndex.set(userId, pos);
+      return pool[pos];
+    }
+  }
+  return null;
+}
+
+function nextHealthyIndex(userId: string, current: PoolToken): number | null {
+  const pool = tokenPools.get(userId);
+  if (!pool) return null;
+  const start = pool.findIndex((p) => p === current);
+  const now = Date.now();
+  for (let i = 1; i <= pool.length; i++) {
+    const cand = pool[(start + i) % pool.length];
+    if (cand.cooldownUntil <= now) return cand.index;
+  }
+  return null;
+}
+
+function focusIndex(userId: string, tokenIndex: number): void {
+  const pool = tokenPools.get(userId);
+  if (!pool) return;
+  const pos = pool.findIndex((p) => p.index === tokenIndex);
+  if (pos >= 0) currentIndex.set(userId, pos);
+}
+
 async function getOrderList(
   token: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
