@@ -188,6 +188,8 @@ export const updateUser = createServerFn({ method: "POST" })
       patch.status = "idle";
       patch.status_message = "";
       patch.auth_token = null;
+      const { clearTokenPool } = await import("./bot-engine.server");
+      clearTokenPool(data.id);
     }
     const { error } = await supabaseAdmin.from("bot_users").update(patch as never).eq("id", data.id);
     if (error) throw new Error(error.message);
