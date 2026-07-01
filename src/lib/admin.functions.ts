@@ -347,6 +347,8 @@ export const deleteUser = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireSession(data.token);
     const supabaseAdmin = await getAdminClient();
+    const { clearTokenPool } = await import("./bot-engine.server");
+    clearTokenPool(data.id);
     const { data: row } = await supabaseAdmin
       .from("bot_users")
       .select("slot")
