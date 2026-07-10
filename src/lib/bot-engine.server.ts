@@ -829,7 +829,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     // Fire the aggressive grab loop in the background so the polling cycle is
     // not blocked. The loop itself never gives up unless the server explicitly
     // confirms success or says the order is gone.
-    void aggressiveGrab(u, token, o, oid).then(async (res) => {
+    void aggressiveGrab(u, token, o, oid, selected).then(async (res) => {
       if (res.ok) {
         await supabaseAdmin
           .from("bot_users")
