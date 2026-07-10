@@ -854,6 +854,9 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Response Time: ${res.ms}ms`,
         );
       } else {
+        if (res.rateLimited) {
+          await applyRateLimitCooldown(u);
+        }
         const rawMsg = res.msg || `code ${res.code ?? "n/a"}`;
         await log(
           u.id,
