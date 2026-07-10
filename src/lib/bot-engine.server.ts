@@ -447,139 +447,55 @@ async function receiveOrderOnce(token: string, order: OrderRow) {
 }
 
 /**
- * BURST-MODE AGGRESSIVE GRAB LOOP
+ * AGGRESSIVE GRAB LOOP — pounds the /receive endpoint for the specific order
+ * until either:
+ *   • the server explicitly confirms success (code 200), OR
+ *   • the server explicitly says the order is gone / taken by another user.
  *
- * Upon detection, each cycle fires a BURST of 4 concurrent grab requests
- * for the specific order (with 10–50ms randomized jitter between each so we
- * mimic human-like network latency rather than a synchronous machine-gun).
+ * Generic HTTP 500s, network blips, parse errors, or "too many requests"
+ * during the grab burst do NOT break the loop — the bot keeps trying.
  *
- * Loop exit conditions:
- *   • ANY of the 4 requests returns code 200            → SUCCESS.
- *   • ANY request explicitly says "order is gone/taken" → STOP (lost race).
- *   • Server returns 429 / "Too many requests"          → cooldown + STOP.
- *
- * Adaptive back-off:
- *   • First 2 bursts run at full width (4 concurrent).
- *   • If the entire burst fails with server errors (5xx/403), we swap the
- *     token (multi-session) and after 2 failed bursts drop into a slower
- *     single-request retry pattern to avoid looking like a spammer.
- *
- * Hard safety caps: ~12s wall-time / 60 bursts.
+ * Hard safety caps prevent a runaway: max ~12s wall-time and 240 attempts,
+ * which is well past the realistic life of a fresh order on this platform.
  */
-const BURST_SIZE = 4;
-const BURST_JITTER_MIN_MS = 10;
-const BURST_JITTER_MAX_MS = 50;
-const BURST_MAX_FAILED = 2;
-
 async function aggressiveGrab(
   u: BotUser,
-  initialToken: string,
+  token: string,
   order: OrderRow,
   oid: string,
-  selected: PoolToken | null,
-): Promise<{ ok: boolean; code?: number; msg?: string; attempts: number; ms: number; rateLimited?: boolean }> {
+): Promise<{ ok: boolean; code?: number; msg?: string; attempts: number; ms: number }> {
   const start = Date.now();
   const MAX_MS = 12_000;
-  const MAX_BURSTS = 60;
-  let token = initialToken;
-  let currentSelected = selected;
+  const MAX_ATTEMPTS = 240;
   let attempts = 0;
-  let bursts = 0;
-  let failedBursts = 0;
   let last: Awaited<ReturnType<typeof receiveOrderOnce>> | null = null;
 
-  while (Date.now() - start < MAX_MS && bursts < MAX_BURSTS) {
-    bursts++;
-    const size = failedBursts >= BURST_MAX_FAILED ? 1 : BURST_SIZE;
-    const modeTag = size === BURST_SIZE ? "BURST" : "SLOW";
+  while (Date.now() - start < MAX_MS && attempts < MAX_ATTEMPTS) {
+    attempts++;
+    const res = await receiveOrderOnce(token, order);
+    last = res;
 
-    await log(
-      u.id,
-      u.slot,
-      "info",
-      `[${modeTag} REQUEST] ${oid} · burst #${bursts} · ${size} concurrent grab request${size > 1 ? "s" : ""} firing (10–50ms jitter)...`,
-    );
-
-    const launches: Promise<Awaited<ReturnType<typeof receiveOrderOnce>>>[] = [];
-    for (let i = 0; i < size; i++) {
-      if (i > 0) {
-        const jitter =
-          BURST_JITTER_MIN_MS + Math.floor(Math.random() * (BURST_JITTER_MAX_MS - BURST_JITTER_MIN_MS + 1));
-        await sleep(jitter);
-      }
-      launches.push(receiveOrderOnce(token, order));
-    }
-    const results = await Promise.all(launches);
-    attempts += results.length;
-    last = results[results.length - 1];
-
-    const winner = results.find((r) => r.ok && r.code === 200);
-    if (winner) {
-      return { ok: true, code: winner.code, msg: winner.msg, attempts, ms: Date.now() - start };
+    // SUCCESS — server confirmed grab.
+    if (res.ok && res.code === 200) {
+      return { ok: true, code: res.code, msg: res.msg, attempts, ms: Date.now() - start };
     }
 
-    const gone = results.find((r) => isOrderGoneMessage(r.msg, r.code));
-    if (gone) {
-      return { ok: false, code: gone.code, msg: gone.msg, attempts, ms: Date.now() - start };
+    // EXPLICIT FAILURE — order is gone / claimed by someone else. Break.
+    if (isOrderGoneMessage(res.msg, res.code)) {
+      return { ok: false, code: res.code, msg: res.msg, attempts, ms: Date.now() - start };
     }
 
-    const throttled = results.find(
-      (r) => r.status === 429 || hasTooManyRequests(r.raw, r.msg),
-    );
-    if (throttled) {
+    // Anything else (HTTP 500, "Too many requests" during burst, network errors,
+    // unknown codes) → keep pounding immediately. Tiny breather so we don't
+    // monopolize the event loop on a hot failure path.
+    if (attempts % 8 === 0) {
       await log(
         u.id,
         u.slot,
-        "error",
-        `[BURST THROTTLED] ${oid} · server returned 429/Too Many Requests during grab burst — cooling down.`,
+        "warn",
+        `[GRAB RETRY] ${oid} · attempt ${attempts} · code=${res.code ?? "n/a"} · "${(res.msg || "").slice(0, 80)}" — retrying...`,
       );
-      return {
-        ok: false,
-        code: throttled.code,
-        msg: throttled.msg || "Too many requests",
-        attempts,
-        ms: Date.now() - start,
-        rateLimited: true,
-      };
     }
-
-    const allServerError = results.every(
-      (r) => r.status >= 500 || r.status === 403 || r.status === 0 || (r.code !== undefined && r.code !== 200),
-    );
-    if (allServerError) {
-      failedBursts++;
-      if (currentSelected) {
-        const pool = tokenPools.get(u.id);
-        const nextIdx = nextHealthyIndex(u.id, currentSelected);
-        currentSelected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
-        currentSelected.hits = 0;
-        await log(
-          u.id,
-          u.slot,
-          "warn",
-          `[BURST FAILOVER] ${oid} · burst #${bursts} all failed on Token #${currentSelected.index}. ` +
-            (nextIdx ? `Swapping to Token #${nextIdx}.` : `Pool exhausted — retrying with current token.`),
-        );
-        if (nextIdx && pool) {
-          const nextTok = pool.find((p) => p.index === nextIdx);
-          if (nextTok) {
-            currentSelected = nextTok;
-            token = nextTok.token;
-            focusIndex(u.id, nextIdx);
-          }
-        }
-      } else {
-        await log(
-          u.id,
-          u.slot,
-          "warn",
-          `[BURST FAILOVER] ${oid} · burst #${bursts} all failed (single-session) · code=${last?.code ?? "n/a"} · "${(last?.msg || "").slice(0, 80)}"`,
-        );
-      }
-    } else {
-      failedBursts = 0;
-    }
-
     await sleep(25);
   }
 
@@ -829,7 +745,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     // Fire the aggressive grab loop in the background so the polling cycle is
     // not blocked. The loop itself never gives up unless the server explicitly
     // confirms success or says the order is gone.
-    void aggressiveGrab(u, token, o, oid, selected).then(async (res) => {
+    void aggressiveGrab(u, token, o, oid).then(async (res) => {
       if (res.ok) {
         await supabaseAdmin
           .from("bot_users")
@@ -854,9 +770,6 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Response Time: ${res.ms}ms`,
         );
       } else {
-        if (res.rateLimited) {
-          await applyRateLimitCooldown(u);
-        }
         const rawMsg = res.msg || `code ${res.code ?? "n/a"}`;
         await log(
           u.id,
