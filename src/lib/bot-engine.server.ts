@@ -420,6 +420,24 @@ function pickPayment(o: OrderRow): string {
 function pickOrderId(o: OrderRow): string {
   return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
+function pickRecipient(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(
+    r.recipientName ?? r.recipient_name ?? r.receiveName ?? r.receiverName ??
+      r.payeeName ?? r.accountName ?? r.userName ?? r.realName ?? "",
+  ).trim() || "N/A";
+}
+function pickAccountNo(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(
+    r.accountNo ?? r.account_no ?? r.accountNumber ?? r.account_number ??
+      r.cardNo ?? r.cardNumber ?? r.bankAccount ?? r.payeeAccount ?? r.receiveAccount ?? "",
+  ).trim() || "N/A";
+}
+function pickIban(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(r.iban ?? r.IBAN ?? r.ibanNo ?? r.iban_number ?? "").trim() || "N/A";
+}
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
@@ -758,6 +776,9 @@ export async function tickUser(u: BotUser): Promise<void> {
           "success",
           `[ORDER GRABBED CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · ${res.ms}ms`,
         );
+        const recipient = pickRecipient(o);
+        const accountNo = pickAccountNo(o);
+        const iban = pickIban(o);
         await sendDualTelegram(
           u,
           `🟢 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
@@ -765,6 +786,9 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
+            `Recipient Name: ${recipient}\n` +
+            `Account No: <code>${accountNo}</code>\n` +
+            `IBAN: <code>${iban}</code>\n` +
             `Status: 100% Successfully Saved to Account!\n` +
             `Attempts: ${res.attempts}\n` +
             `Response Time: ${res.ms}ms`,
@@ -777,6 +801,9 @@ export async function tickUser(u: BotUser): Promise<void> {
           "warn",
           `[ORDER DETECTED BUT MISSED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · reason="${rawMsg}"`,
         );
+        const recipient = pickRecipient(o);
+        const accountNo = pickAccountNo(o);
+        const iban = pickIban(o);
         await sendDualTelegram(
           u,
           `⚠️ <b>[ORDER DETECTED BUT MISSED]</b>\n` +
@@ -784,6 +811,9 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
+            `Recipient Name: ${recipient}\n` +
+            `Account No: <code>${accountNo}</code>\n` +
+            `IBAN: <code>${iban}</code>\n` +
             `Status: Server confirmed order is no longer available (claimed elsewhere).\n` +
             `Attempts: ${res.attempts}\n` +
             `Response Time: ${res.ms}ms\n` +
