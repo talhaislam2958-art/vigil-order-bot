@@ -420,6 +420,24 @@ function pickPayment(o: OrderRow): string {
 function pickOrderId(o: OrderRow): string {
   return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
+function pickRecipient(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(
+    r.recipientName ?? r.recipient_name ?? r.receiveName ?? r.receiverName ??
+      r.payeeName ?? r.accountName ?? r.userName ?? r.realName ?? "",
+  ).trim() || "N/A";
+}
+function pickAccountNo(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(
+    r.accountNo ?? r.account_no ?? r.accountNumber ?? r.account_number ??
+      r.cardNo ?? r.cardNumber ?? r.bankAccount ?? r.payeeAccount ?? r.receiveAccount ?? "",
+  ).trim() || "N/A";
+}
+function pickIban(o: OrderRow): string {
+  const r = o as Record<string, unknown>;
+  return String(r.iban ?? r.IBAN ?? r.ibanNo ?? r.iban_number ?? "").trim() || "N/A";
+}
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
