@@ -810,6 +810,10 @@ export async function tickUser(u: BotUser): Promise<void> {
         const recipient = pickRecipient(o);
         const accountNo = pickAccountNo(o);
         const iban = pickIban(o);
+        if (accountNo === "N/A" || iban === "N/A") {
+          await log(u.id, u.slot, "info",
+            `[ORDER FIELDS DUMP] ${oid} :: ${JSON.stringify(o)}`);
+        }
         await sendDualTelegram(
           u,
           `🟢 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
