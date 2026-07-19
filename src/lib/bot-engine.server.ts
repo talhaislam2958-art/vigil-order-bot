@@ -420,23 +420,54 @@ function pickPayment(o: OrderRow): string {
 function pickOrderId(o: OrderRow): string {
   return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
+// Recursive deep-search: some APIs nest bank info under
+// customer_details / bankInfo / receiveInfo / payeeInfo / account / bank.
+function deepFind(obj: unknown, keys: string[], depth = 0): string {
+  if (!obj || typeof obj !== "object" || depth > 5) return "";
+  const rec = obj as Record<string, unknown>;
+  for (const k of Object.keys(rec)) {
+    const lower = k.toLowerCase();
+    if (keys.includes(lower)) {
+      const v = rec[k];
+      if (v != null && typeof v !== "object") {
+        const s = String(v).trim();
+        if (s && s.toLowerCase() !== "null" && s.toLowerCase() !== "undefined") return s;
+      }
+    }
+  }
+  for (const k of Object.keys(rec)) {
+    const v = rec[k];
+    if (v && typeof v === "object") {
+      const found = deepFind(v, keys, depth + 1);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
 function pickRecipient(o: OrderRow): string {
-  const r = o as Record<string, unknown>;
-  return String(
-    r.recipientName ?? r.recipient_name ?? r.receiveName ?? r.receiverName ??
-      r.payeeName ?? r.accountName ?? r.userName ?? r.realName ?? "",
-  ).trim() || "N/A";
+  return deepFind(o, [
+    "recipientname", "recipient_name", "receivename", "receive_name",
+    "receivername", "receiver_name", "payeename", "payee_name",
+    "accountname", "account_name", "username", "user_name",
+    "realname", "real_name", "holdername", "holder_name", "name",
+  ]) || "N/A";
 }
 function pickAccountNo(o: OrderRow): string {
-  const r = o as Record<string, unknown>;
-  return String(
-    r.accountNo ?? r.account_no ?? r.accountNumber ?? r.account_number ??
-      r.cardNo ?? r.cardNumber ?? r.bankAccount ?? r.payeeAccount ?? r.receiveAccount ?? "",
-  ).trim() || "N/A";
+  return deepFind(o, [
+    "accountno", "account_no", "accountnumber", "account_number",
+    "cardno", "card_no", "cardnumber", "card_number",
+    "bankaccount", "bank_account", "payeeaccount", "payee_account",
+    "receiveaccount", "receive_account", "phoneno", "phone_no",
+    "phone", "mobile", "mobileno", "mobile_no",
+    "stcaccount", "stc_account", "stcpay", "stc_pay",
+  ]) || "N/A";
 }
 function pickIban(o: OrderRow): string {
-  const r = o as Record<string, unknown>;
-  return String(r.iban ?? r.IBAN ?? r.ibanNo ?? r.iban_number ?? "").trim() || "N/A";
+  return deepFind(o, [
+    "iban", "ibanno", "iban_no", "ibannumber", "iban_number",
+    "ibancode", "iban_code",
+  ]) || "N/A";
 }
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
