@@ -420,55 +420,6 @@ function pickPayment(o: OrderRow): string {
 function pickOrderId(o: OrderRow): string {
   return String(o.orderNo ?? o.orderId ?? o.id ?? "");
 }
-// Recursive deep-search: some APIs nest bank info under
-// customer_details / bankInfo / receiveInfo / payeeInfo / account / bank.
-function deepFind(obj: unknown, keys: string[], depth = 0): string {
-  if (!obj || typeof obj !== "object" || depth > 5) return "";
-  const rec = obj as Record<string, unknown>;
-  for (const k of Object.keys(rec)) {
-    const lower = k.toLowerCase();
-    if (keys.includes(lower)) {
-      const v = rec[k];
-      if (v != null && typeof v !== "object") {
-        const s = String(v).trim();
-        if (s && s.toLowerCase() !== "null" && s.toLowerCase() !== "undefined") return s;
-      }
-    }
-  }
-  for (const k of Object.keys(rec)) {
-    const v = rec[k];
-    if (v && typeof v === "object") {
-      const found = deepFind(v, keys, depth + 1);
-      if (found) return found;
-    }
-  }
-  return "";
-}
-
-function pickRecipient(o: OrderRow): string {
-  return deepFind(o, [
-    "recipientname", "recipient_name", "receivename", "receive_name",
-    "receivername", "receiver_name", "payeename", "payee_name",
-    "accountname", "account_name", "username", "user_name",
-    "realname", "real_name", "holdername", "holder_name", "name",
-  ]) || "N/A";
-}
-function pickAccountNo(o: OrderRow): string {
-  return deepFind(o, [
-    "accountno", "account_no", "accountnumber", "account_number",
-    "cardno", "card_no", "cardnumber", "card_number",
-    "bankaccount", "bank_account", "payeeaccount", "payee_account",
-    "receiveaccount", "receive_account", "phoneno", "phone_no",
-    "phone", "mobile", "mobileno", "mobile_no",
-    "stcaccount", "stc_account", "stcpay", "stc_pay",
-  ]) || "N/A";
-}
-function pickIban(o: OrderRow): string {
-  return deepFind(o, [
-    "iban", "ibanno", "iban_no", "ibannumber", "iban_number",
-    "ibancode", "iban_code",
-  ]) || "N/A";
-}
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
@@ -807,13 +758,6 @@ export async function tickUser(u: BotUser): Promise<void> {
           "success",
           `[ORDER GRABBED CONFIRMED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · ${res.ms}ms`,
         );
-        const recipient = pickRecipient(o);
-        const accountNo = pickAccountNo(o);
-        const iban = pickIban(o);
-        if (accountNo === "N/A" || iban === "N/A") {
-          await log(u.id, u.slot, "info",
-            `[ORDER FIELDS DUMP] ${oid} :: ${JSON.stringify(o)}`);
-        }
         await sendDualTelegram(
           u,
           `🟢 <b>[ORDER GRABBED CONFIRMED]</b>\n` +
@@ -821,9 +765,6 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
-            `Recipient Name: ${recipient}\n` +
-            `Account No: <code>${accountNo}</code>\n` +
-            `IBAN: <code>${iban}</code>\n` +
             `Status: 100% Successfully Saved to Account!\n` +
             `Attempts: ${res.attempts}\n` +
             `Response Time: ${res.ms}ms`,
@@ -836,9 +777,6 @@ export async function tickUser(u: BotUser): Promise<void> {
           "warn",
           `[ORDER DETECTED BUT MISSED] ${oid} · ${amt} SAR · ${payLabel} · attempts=${res.attempts} · reason="${rawMsg}"`,
         );
-        const recipient = pickRecipient(o);
-        const accountNo = pickAccountNo(o);
-        const iban = pickIban(o);
         await sendDualTelegram(
           u,
           `⚠️ <b>[ORDER DETECTED BUT MISSED]</b>\n` +
@@ -846,9 +784,6 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Order No: <code>${oid}</code>\n` +
             `Amount: <b>${amt}</b> Riyals\n` +
             `Payment: ${payLabel}\n` +
-            `Recipient Name: ${recipient}\n` +
-            `Account No: <code>${accountNo}</code>\n` +
-            `IBAN: <code>${iban}</code>\n` +
             `Status: Server confirmed order is no longer available (claimed elsewhere).\n` +
             `Attempts: ${res.attempts}\n` +
             `Response Time: ${res.ms}ms\n` +
