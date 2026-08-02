@@ -15,8 +15,6 @@ export type BotUser = {
   telegram_chat_id: string;
   min_price: number;
   max_price: number;
-  amount_mode?: string | null;
-  specific_amounts?: (number | string)[] | null;
   payment_methods: string[];
   polling_interval_ms: number;
   cooldown_seconds: number;
@@ -777,22 +775,10 @@ export async function tickUser(u: BotUser): Promise<void> {
     const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
 
     let skipReason = "";
-    // Mutually exclusive amount filtering: Mode B (specific) fully overrides Mode A (range).
-    const specificMode = String(u.amount_mode || "range").toLowerCase() === "specific";
-    if (specificMode) {
-      const targets = (u.specific_amounts || []).map((x) => Number(x)).filter((n) => Number.isFinite(n));
-      if (targets.length === 0) {
-        skipReason = "Specific amounts mode active but no target amounts selected";
-      } else if (!targets.some((t) => Math.abs(t - amt) < 0.01)) {
-        skipReason = `Amount ${amt} SAR not in selected amounts [${targets.join(", ")}]`;
-      }
-    } else if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
+    if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
       skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
-    }
-    if (!skipReason) {
-      if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
-        skipReason = `Payment "${payLabel}" not in selected filters`;
-      }
+    } else if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
+      skipReason = `Payment "${payLabel}" not in selected filters`;
     }
     if (skipReason) {
       await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);

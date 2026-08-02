@@ -102,7 +102,6 @@ export type Database = {
       }
       bot_users: {
         Row: {
-          amount_mode: string
           auth_token: string | null
           auth_token_at: string | null
           cooldown_seconds: number
@@ -119,7 +118,6 @@ export type Database = {
           polling_interval_ms: number
           seen_order_ids: string[]
           slot: number
-          specific_amounts: number[]
           status: string
           status_message: string
           telegram_bot_token: string
@@ -128,7 +126,6 @@ export type Database = {
           username: string
         }
         Insert: {
-          amount_mode?: string
           auth_token?: string | null
           auth_token_at?: string | null
           cooldown_seconds?: number
@@ -145,7 +142,6 @@ export type Database = {
           polling_interval_ms?: number
           seen_order_ids?: string[]
           slot: number
-          specific_amounts?: number[]
           status?: string
           status_message?: string
           telegram_bot_token?: string
@@ -154,7 +150,6 @@ export type Database = {
           username?: string
         }
         Update: {
-          amount_mode?: string
           auth_token?: string | null
           auth_token_at?: string | null
           cooldown_seconds?: number
@@ -171,7 +166,6 @@ export type Database = {
           polling_interval_ms?: number
           seen_order_ids?: string[]
           slot?: number
-          specific_amounts?: number[]
           status?: string
           status_message?: string
           telegram_bot_token?: string
