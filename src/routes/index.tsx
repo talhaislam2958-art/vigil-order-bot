@@ -226,6 +226,8 @@ function Gate({
 }
 
 type BotUser = Awaited<ReturnType<typeof listUsers>>[number];
+
+const AMOUNT_PRESETS: number[] = Array.from({ length: 19 }, (_, i) => 100 + i * 50);
 type LogRow = Awaited<ReturnType<typeof getLogs>>[number];
 
 function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogout: () => void; theme: Theme; setTheme: (t: Theme) => void }) {
@@ -715,6 +717,14 @@ function UserCard({
   };
 
   const cooldownSec = (v as BotUser & { cooldown_seconds?: number }).cooldown_seconds ?? 10;
+  const amountMode = ((v as BotUser & { amount_mode?: string }).amount_mode ?? "range") === "specific" ? "specific" : "range";
+  const specificAmounts = (((v as BotUser & { specific_amounts?: (number | string)[] }).specific_amounts ?? []) as (number | string)[]).map(Number);
+  const toggleAmount = (n: number) => {
+    const cur = new Set(specificAmounts);
+    if (cur.has(n)) cur.delete(n);
+    else cur.add(n);
+    setF("specific_amounts" as keyof BotUser, Array.from(cur).sort((a, b) => a - b) as never);
+  };
 
   const step1State: "done" | "active" | "locked" = isVerified ? "done" : "active";
   const step2State: "done" | "active" | "locked" = !isVerified ? "locked" : v.is_active ? "done" : "active";
@@ -842,20 +852,22 @@ function UserCard({
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Field label="Min price (SAR)">
+            <Field label="Min price (SAR) [Mode A]">
               <input
                 type="number"
+                disabled={amountMode !== "range"}
                 value={v.min_price ?? 0}
                 onChange={(e) => setF("min_price", Number(e.target.value))}
-                className={input}
+                className={input + (amountMode !== "range" ? " opacity-40" : "")}
               />
             </Field>
-            <Field label="Max price (SAR)">
+            <Field label="Max price (SAR) [Mode A]">
               <input
                 type="number"
+                disabled={amountMode !== "range"}
                 value={v.max_price ?? 0}
                 onChange={(e) => setF("max_price", Number(e.target.value))}
-                className={input}
+                className={input + (amountMode !== "range" ? " opacity-40" : "")}
               />
             </Field>
             <Field label="Interval (MS) [Strict Fixed Mode]">
@@ -910,6 +922,80 @@ function UserCard({
                 placeholder="-1001234567890"
               />
             </Field>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-border bg-surface/40 p-3">
+            <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              Amount Filter Mode <span className="text-foreground">(exclusive)</span>
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {([
+                { key: "range", label: "Mode A · Range (Min/Max)" },
+                { key: "specific", label: "Mode B · Specific Amounts" },
+              ] as const).map((m) => {
+                const on = amountMode === m.key;
+                return (
+                  <button
+                    key={m.key}
+                    onClick={() => setF("amount_mode" as keyof BotUser, m.key as never)}
+                    className={`rounded-lg border px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
+                      on
+                        ? "neon-border bg-[var(--neon)]/10 neon-text"
+                        : "border-border bg-surface text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {on ? "◉" : "◯"} {m.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {amountMode === "specific" && (
+              <div className="mt-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+                    Target amounts (100 → 1000, step 50) · {specificAmounts.length} selected
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() =>
+                        setF(
+                          "specific_amounts" as keyof BotUser,
+                          AMOUNT_PRESETS as never,
+                        )
+                      }
+                      className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-wider hover:bg-surface-2"
+                    >
+                      All
+                    </button>
+                    <button
+                      onClick={() => setF("specific_amounts" as keyof BotUser, [] as never)}
+                      className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-bold uppercase tracking-wider hover:bg-surface-2"
+                    >
+                      None
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-7">
+                  {AMOUNT_PRESETS.map((n) => {
+                    const on = specificAmounts.includes(n);
+                    return (
+                      <button
+                        key={n}
+                        onClick={() => toggleAmount(n)}
+                        className={`rounded-lg border px-2 py-1.5 font-mono text-[11px] font-bold transition ${
+                          on
+                            ? "neon-border bg-[var(--neon)]/10 neon-text"
+                            : "border-border bg-surface text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {on ? "☑" : "☐"} {n}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-4">
