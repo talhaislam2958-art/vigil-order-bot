@@ -475,6 +475,7 @@ function acquireListSlot(): Promise<() => void> {
 
 async function getOrderList(
   token: string,
+  userId?: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
   const release = await acquireListSlot();
   const t0 = Date.now();
