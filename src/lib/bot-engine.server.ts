@@ -697,6 +697,9 @@ export async function tickUser(u: BotUser): Promise<void> {
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
   if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
 
+  // ---- ACTIVE HEALTH CHECK: proactive 7-minute session refresh --------------
+  if (await healthGate(u)) return; // fresh session built; next tick runs clean
+
   // ---- Build the 10-token pool on first tick ---------------------------------
   let pool = tokenPools.get(u.id);
   if (!pool) {
@@ -742,7 +745,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
   );
 
-  let list = await getOrderList(token);
+  let list = await getOrderList(token, u.id);
 
   // ---- 401 handling: refresh the specific token slot (or single-session) -----
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
@@ -753,7 +756,7 @@ export async function tickUser(u: BotUser): Promise<void> {
         selected.token = fresh;
         selected.hits = 0;
         token = fresh;
-        list = await getOrderList(token);
+        list = await getOrderList(token, u.id);
       } else {
         selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
         return;
@@ -761,9 +764,11 @@ export async function tickUser(u: BotUser): Promise<void> {
     } else {
       token = await loginUser(u);
       if (!token) return;
-      list = await getOrderList(token);
+      list = await getOrderList(token, u.id);
     }
   }
+
+  if (list.status === 200) markSessionHealthy(u.id);
 
   const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
   const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
