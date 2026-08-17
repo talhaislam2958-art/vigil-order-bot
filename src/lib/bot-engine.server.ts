@@ -487,9 +487,8 @@ async function getOrderList(
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
-        ...MOBILE_HEADERS,
+        ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
       },
-      keepalive: true,
     });
     const text = await r.text();
     let j: unknown = {};
