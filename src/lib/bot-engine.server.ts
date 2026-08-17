@@ -252,7 +252,129 @@ export function clearTokenPool(userId: string): void {
   currentIndex.delete(userId);
   poolBuilding.delete(userId);
   perUserCooldownUntil.delete(userId);
+  sessionStartedAt.delete(userId);
+  lastHealthyAt.delete(userId);
+  sessionEpoch.delete(userId);
 }
+
+// ============================================================================
+// ACTIVE SESSION HEALTH MONITOR — proactive 7-minute session recycle
+// ----------------------------------------------------------------------------
+// The upstream/worker session degrades silently after roughly 8-10 minutes:
+// sockets go stale, pooled tokens stop returning data and the loop freezes.
+// Instead of waiting for the thread to die, every session is age-checked on
+// every tick and PROACTIVELY torn down at the 7-minute mark (or earlier if it
+// has not produced a healthy response within the stall window). The teardown
+// flushes tokens, cooldown locks, the shared list-gate chain and the cached
+// admin config, bumps the session epoch (which rotates connection headers so
+// the runtime opens brand-new sockets), then rebuilds a fresh token pool —
+// functionally identical to a manual version revert, but automatic.
+// ============================================================================
+const SESSION_MAX_AGE_MS = 7 * 60 * 1000; // proactive recycle at 7 minutes
+const SESSION_STALL_MS = 90 * 1000; // no healthy response for 90s => frozen
+
+const sessionStartedAt = new Map<string, number>();
+const lastHealthyAt = new Map<string, number>();
+const sessionEpoch = new Map<string, number>();
+
+/** Called after every successful (HTTP 200) poll so the watchdog sees liveness. */
+export function markSessionHealthy(userId: string): void {
+  lastHealthyAt.set(userId, Date.now());
+}
+
+/** Fresh header set per session epoch — forces new sockets after a recycle. */
+function mobileHeaders(userId: string): Record<string, string> {
+  const epoch = sessionEpoch.get(userId) ?? 0;
+  return {
+    ...MOBILE_HEADERS,
+    "X-Session-Epoch": String(epoch),
+    "X-Request-Id": `${epoch}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+  };
+}
+
+/**
+ * DEEP CLEAN + RESTART. Flushes every stuck in-memory buffer tied to this slot,
+ * rotates connection headers, and re-initializes a fresh polling session.
+ */
+async function recycleSession(u: BotUser, reason: string): Promise<void> {
+  const epoch = (sessionEpoch.get(u.id) ?? 0) + 1;
+  await log(
+    u.id,
+    u.slot,
+    "warn",
+    `[SESSION HEALTH] ${reason} — flushing tokens/sockets and re-initializing a fresh session (epoch #${epoch}).`,
+  );
+
+  // 1. Deep clean: drop all per-slot memory buffers.
+  tokenPools.delete(u.id);
+  currentIndex.delete(u.id);
+  poolBuilding.delete(u.id);
+  perUserCooldownUntil.delete(u.id);
+
+  // 2. Reset shared outbound gate so a wedged chain can't block the new loop.
+  listGateChain = Promise.resolve();
+  listLastAt = 0;
+
+  // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
+  sessionEpoch.set(u.id, epoch);
+  invalidateAdminTelegramCache();
+
+  // 4. Clear the stored token so single-session fallback re-logins cleanly.
+  try {
+    await supabaseAdmin
+      .from("bot_users")
+      .update({ auth_token: null, auth_token_at: null })
+      .eq("id", u.id);
+  } catch {
+    /* non-fatal */
+  }
+
+  // 5. Fresh session clock, then rebuild the pool immediately.
+  sessionStartedAt.set(u.id, Date.now());
+  lastHealthyAt.set(u.id, Date.now());
+
+  const rebuilt = await buildTokenPool(u);
+  await log(
+    u.id,
+    u.slot,
+    rebuilt ? "success" : "error",
+    rebuilt
+      ? `[SESSION HEALTH] Auto-reconnect complete — ${rebuilt.length} fresh tokens live. Polling resumed.`
+      : `[SESSION HEALTH] Auto-reconnect could not rebuild the token pool; falling back to single-session login.`,
+  );
+}
+
+/**
+ * Active health check, evaluated on every tick. Returns true when a recycle
+ * was performed (the caller should skip this tick, the next one runs fresh).
+ */
+async function healthGate(u: BotUser): Promise<boolean> {
+  const now = Date.now();
+  const started = sessionStartedAt.get(u.id);
+  if (!started) {
+    sessionStartedAt.set(u.id, now);
+    lastHealthyAt.set(u.id, now);
+    if (!sessionEpoch.has(u.id)) sessionEpoch.set(u.id, 1);
+    return false;
+  }
+
+  const age = now - started;
+  const idle = now - (lastHealthyAt.get(u.id) ?? now);
+
+  if (age >= SESSION_MAX_AGE_MS) {
+    await recycleSession(
+      u,
+      `Session age ${Math.round(age / 1000)}s reached the 7-minute proactive refresh mark`,
+    );
+    return true;
+  }
+  if (idle >= SESSION_STALL_MS) {
+    await recycleSession(u, `No healthy response for ${Math.round(idle / 1000)}s (frozen session detected)`);
+    return true;
+  }
+  return false;
+}
+
 
 async function rawLogin(u: BotUser): Promise<string | null> {
   try {
@@ -353,6 +475,7 @@ function acquireListSlot(): Promise<() => void> {
 
 async function getOrderList(
   token: string,
+  userId?: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
   const release = await acquireListSlot();
   const t0 = Date.now();
@@ -364,7 +487,7 @@ async function getOrderList(
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
-        ...MOBILE_HEADERS,
+        ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
       },
       keepalive: true,
     });
@@ -574,6 +697,9 @@ export async function tickUser(u: BotUser): Promise<void> {
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
   if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
 
+  // ---- ACTIVE HEALTH CHECK: proactive 7-minute session refresh --------------
+  if (await healthGate(u)) return; // fresh session built; next tick runs clean
+
   // ---- Build the 10-token pool on first tick ---------------------------------
   let pool = tokenPools.get(u.id);
   if (!pool) {
@@ -619,7 +745,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
   );
 
-  let list = await getOrderList(token);
+  let list = await getOrderList(token, u.id);
 
   // ---- 401 handling: refresh the specific token slot (or single-session) -----
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
@@ -630,7 +756,7 @@ export async function tickUser(u: BotUser): Promise<void> {
         selected.token = fresh;
         selected.hits = 0;
         token = fresh;
-        list = await getOrderList(token);
+        list = await getOrderList(token, u.id);
       } else {
         selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
         return;
@@ -638,9 +764,11 @@ export async function tickUser(u: BotUser): Promise<void> {
     } else {
       token = await loginUser(u);
       if (!token) return;
-      list = await getOrderList(token);
+      list = await getOrderList(token, u.id);
     }
   }
+
+  if (list.status === 200) markSessionHealthy(u.id);
 
   const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
   const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
