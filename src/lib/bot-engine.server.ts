@@ -489,6 +489,7 @@ async function getOrderList(
         Authorization: `Bearer ${token}`,
         ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
       },
+      keepalive: true,
     });
     const text = await r.text();
     let j: unknown = {};
