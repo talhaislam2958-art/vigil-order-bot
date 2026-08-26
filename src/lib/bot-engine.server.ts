@@ -1055,6 +1055,39 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 }
 
+// ============================================================================
+// MEMORY SWEEP + KEEP-ALIVE
+// Per-slot in-memory maps (token pools, session clocks, cooldowns, log counters)
+// are pruned every cycle for slots that are no longer active, so nothing leaks
+// across hours of runtime. The keep-alive ping keeps the upstream connection and
+// the cloud worker warm without opening extra sockets per tick.
+// ============================================================================
+const KEEPALIVE_EVERY_MS = 4 * 60 * 1000;
+let lastKeepAliveAt = 0;
+
+function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, sessionStartedAt, lastHealthyAt, sessionEpoch] as Map<string, unknown>[]) {
+    for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
+  }
+  for (const key of Array.from(logInsertCount.keys())) {
+    if (key !== -1 && !activeSlots.has(key)) logInsertCount.delete(key);
+  }
+}
+
+async function keepAlive(): Promise<void> {
+  if (Date.now() - lastKeepAliveAt < KEEPALIVE_EVERY_MS) return;
+  lastKeepAliveAt = Date.now();
+  try {
+    await fetch(`${BASE}/captchaImage?_t=${Date.now()}`, {
+      method: "GET",
+      headers: MOBILE_HEADERS,
+      keepalive: true,
+    });
+  } catch {
+    /* keep-alive is best-effort and must never surface an error */
+  }
+}
+
 /**
  * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
  * `polling_interval_ms`. No Math.random(), no jitter, no variation.
@@ -1073,6 +1106,17 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
   const stagger = LIST_MIN_GAP_MS;
   const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
   let ticks = 0;
+
+  try {
+    sweepMemory(
+      new Set(state.map((s) => s.u.id)),
+      new Set(state.map((s) => s.u.slot)),
+    );
+  } catch {
+    /* sweeping is never fatal */
+  }
+  void keepAlive();
+
 
 
   while (Date.now() - start < budgetMs) {
