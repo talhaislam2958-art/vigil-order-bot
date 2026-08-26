@@ -28,6 +28,41 @@ export type BotUser = {
   seen_order_ids: string[];
 };
 
+// ============================================================================
+// LOG BUFFER TRIMMING — hard cap on retained log rows per slot.
+// Every insert increments a per-slot counter; once the counter passes the
+// prune stride we delete everything older than the newest LOG_RETENTION rows
+// for that slot. This keeps the terminal snappy and stops the backend table
+// (and the browser's in-memory array) from accumulating bloat over days.
+// ============================================================================
+const LOG_RETENTION = 100; // max log rows kept per slot
+const LOG_PRUNE_STRIDE = 25; // prune after this many inserts on a slot
+const logInsertCount = new Map<number, number>();
+let pruningGlobal = false;
+
+async function pruneSlotLogs(slot: number | null): Promise<void> {
+  if (pruningGlobal) return;
+  pruningGlobal = true;
+  try {
+    let q = supabaseAdmin
+      .from("bot_logs")
+      .select("id")
+      .order("created_at", { ascending: false })
+      .range(LOG_RETENTION, LOG_RETENTION);
+    if (slot !== null) q = q.eq("slot", slot);
+    const { data } = await q;
+    const cutoffId = (data as { id: number }[] | null)?.[0]?.id;
+    if (cutoffId === undefined) return;
+    let del = supabaseAdmin.from("bot_logs").delete().lte("id", cutoffId);
+    if (slot !== null) del = del.eq("slot", slot);
+    await del;
+  } catch {
+    /* pruning is best-effort, never fatal */
+  } finally {
+    pruningGlobal = false;
+  }
+}
+
 export async function log(
   user_id: string | null,
   slot: number | null,
@@ -40,13 +75,23 @@ export async function log(
       user_id,
       slot,
       level,
-      message,
+      // Cap single-line size so a huge raw dump can't bloat the buffer.
+      message: message.length > 2000 ? message.slice(0, 2000) + "…" : message,
       meta: (meta ?? null) as never,
     });
+    const key = slot ?? -1;
+    const n = (logInsertCount.get(key) ?? 0) + 1;
+    if (n >= LOG_PRUNE_STRIDE) {
+      logInsertCount.set(key, 0);
+      void pruneSlotLogs(slot);
+    } else {
+      logInsertCount.set(key, n);
+    }
   } catch (e) {
     console.error("log insert failed", e);
   }
 }
+
 
 export async function setStatus(
   id: string,
