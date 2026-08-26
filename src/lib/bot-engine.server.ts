@@ -28,6 +28,41 @@ export type BotUser = {
   seen_order_ids: string[];
 };
 
+// ============================================================================
+// LOG BUFFER TRIMMING — hard cap on retained log rows per slot.
+// Every insert increments a per-slot counter; once the counter passes the
+// prune stride we delete everything older than the newest LOG_RETENTION rows
+// for that slot. This keeps the terminal snappy and stops the backend table
+// (and the browser's in-memory array) from accumulating bloat over days.
+// ============================================================================
+const LOG_RETENTION = 100; // max log rows kept per slot
+const LOG_PRUNE_STRIDE = 25; // prune after this many inserts on a slot
+const logInsertCount = new Map<number, number>();
+let pruningGlobal = false;
+
+async function pruneSlotLogs(slot: number | null): Promise<void> {
+  if (pruningGlobal) return;
+  pruningGlobal = true;
+  try {
+    let q = supabaseAdmin
+      .from("bot_logs")
+      .select("id")
+      .order("created_at", { ascending: false })
+      .range(LOG_RETENTION, LOG_RETENTION);
+    if (slot !== null) q = q.eq("slot", slot);
+    const { data } = await q;
+    const cutoffId = (data as { id: number }[] | null)?.[0]?.id;
+    if (cutoffId === undefined) return;
+    let del = supabaseAdmin.from("bot_logs").delete().lte("id", cutoffId);
+    if (slot !== null) del = del.eq("slot", slot);
+    await del;
+  } catch {
+    /* pruning is best-effort, never fatal */
+  } finally {
+    pruningGlobal = false;
+  }
+}
+
 export async function log(
   user_id: string | null,
   slot: number | null,
@@ -40,13 +75,23 @@ export async function log(
       user_id,
       slot,
       level,
-      message,
+      // Cap single-line size so a huge raw dump can't bloat the buffer.
+      message: message.length > 2000 ? message.slice(0, 2000) + "…" : message,
       meta: (meta ?? null) as never,
     });
+    const key = slot ?? -1;
+    const n = (logInsertCount.get(key) ?? 0) + 1;
+    if (n >= LOG_PRUNE_STRIDE) {
+      logInsertCount.set(key, 0);
+      void pruneSlotLogs(slot);
+    } else {
+      logInsertCount.set(key, n);
+    }
   } catch (e) {
     console.error("log insert failed", e);
   }
 }
+
 
 export async function setStatus(
   id: string,
@@ -883,6 +928,11 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
   const newSeen: string[] = [];
 
+  // Amount range is evaluated against numbers resolved ONCE (not per order),
+  // so the hot detection path does zero redundant coercion work.
+  const minP = Number(u.min_price) || 0;
+  const maxP = Number(u.max_price) || Number.MAX_SAFE_INTEGER;
+
   const friendly = (raw: string): string => {
     const r = raw.toLowerCase();
     if (/stc/.test(r)) return "STC Pay";
@@ -902,27 +952,31 @@ export async function tickUser(u: BotUser): Promise<void> {
     const userTag = u.label || u.username;
     const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
 
+    // ---- ZERO-LAG FILTER EVAL (fully synchronous, no awaits) ----------------
     let skipReason = "";
-    if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
-      skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
+    if (amt < minP || amt > maxP) {
+      skipReason = `Price ${amt} SAR outside range ${minP}–${maxP}`;
     } else if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
       skipReason = `Payment "${payLabel}" not in selected filters`;
     }
     if (skipReason) {
-      await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
-      await sendDualTelegram(
+      // Non-blocking: never let a skip notification delay a real match.
+      void log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
+      void sendDualTelegram(
         u,
         `⚠️ <b>[ORDER SKIPPED]</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
       );
       continue;
     }
 
-    await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — entering AGGRESSIVE GRAB LOOP`);
+    // ---- TOP-PRIORITY INSTANT CLAIM ----------------------------------------
+    // The POST claim fires on this very line — BEFORE any logging, DB write or
+    // Telegram call — so nothing stands between detection and the grab.
+    const grabPromise = aggressiveGrab(u, token, o, oid);
+    void log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — instant claim fired (top priority)`);
 
-    // Fire the aggressive grab loop in the background so the polling cycle is
-    // not blocked. The loop itself never gives up unless the server explicitly
-    // confirms success or says the order is gone.
-    void aggressiveGrab(u, token, o, oid).then(async (res) => {
+    void grabPromise.then(async (res) => {
+
       if (res.ok) {
         await supabaseAdmin
           .from("bot_users")
@@ -983,12 +1037,54 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
+    }).catch((e) => {
+      // Never let a post-grab failure reject unhandled and kill the worker.
+      void log(
+        u.id,
+        u.slot,
+        "error",
+        `[GRAB HANDLER RECOVERED] ${oid} · ${e instanceof Error ? e.message : String(e)}`,
+      );
     });
+
   }
 
   if (newSeen.length) {
     const merged = Array.from(new Set([...(u.seen_order_ids || []), ...newSeen])).slice(-200);
     await supabaseAdmin.from("bot_users").update({ seen_order_ids: merged }).eq("id", u.id);
+  }
+}
+
+// ============================================================================
+// MEMORY SWEEP + KEEP-ALIVE
+// Per-slot in-memory maps (token pools, session clocks, cooldowns, log counters)
+// are pruned every cycle for slots that are no longer active, so nothing leaks
+// across hours of runtime. The keep-alive ping keeps the upstream connection and
+// the cloud worker warm without opening extra sockets per tick.
+// ============================================================================
+const KEEPALIVE_EVERY_MS = 4 * 60 * 1000;
+let lastKeepAliveAt = 0;
+
+function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, sessionStartedAt, lastHealthyAt, sessionEpoch] as unknown as Map<string, unknown>[]) {
+    for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
+  }
+  for (const key of Array.from(logInsertCount.keys())) {
+    if (key !== -1 && !activeSlots.has(key)) logInsertCount.delete(key);
+  }
+}
+
+async function keepAlive(): Promise<void> {
+  if (Date.now() - lastKeepAliveAt < KEEPALIVE_EVERY_MS) return;
+  lastKeepAliveAt = Date.now();
+  try {
+    await fetch(`${BASE}/captchaImage?_t=${Date.now()}`, {
+      method: "GET",
+      headers: MOBILE_HEADERS,
+      keepalive: true,
+    });
+  } catch {
+    /* keep-alive is best-effort and must never surface an error */
   }
 }
 
@@ -1010,6 +1106,17 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
   const stagger = LIST_MIN_GAP_MS;
   const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
   let ticks = 0;
+
+  try {
+    sweepMemory(
+      new Set(state.map((s) => s.u.id)),
+      new Set(state.map((s) => s.u.slot)),
+    );
+  } catch {
+    /* sweeping is never fatal */
+  }
+  void keepAlive();
+
 
 
   while (Date.now() - start < budgetMs) {
