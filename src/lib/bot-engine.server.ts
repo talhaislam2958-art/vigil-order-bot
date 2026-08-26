@@ -1066,7 +1066,7 @@ const KEEPALIVE_EVERY_MS = 4 * 60 * 1000;
 let lastKeepAliveAt = 0;
 
 function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
-  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, sessionStartedAt, lastHealthyAt, sessionEpoch] as Map<string, unknown>[]) {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, sessionStartedAt, lastHealthyAt, sessionEpoch] as unknown as Map<string, unknown>[]) {
     for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
   }
   for (const key of Array.from(logInsertCount.keys())) {
