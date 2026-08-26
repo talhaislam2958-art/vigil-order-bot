@@ -1037,7 +1037,16 @@ export async function tickUser(u: BotUser): Promise<void> {
             `Reason: <code>${rawMsg.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] as string)}</code>`,
         );
       }
+    }).catch((e) => {
+      // Never let a post-grab failure reject unhandled and kill the worker.
+      void log(
+        u.id,
+        u.slot,
+        "error",
+        `[GRAB HANDLER RECOVERED] ${oid} · ${e instanceof Error ? e.message : String(e)}`,
+      );
     });
+
   }
 
   if (newSeen.length) {
