@@ -928,6 +928,11 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
   const newSeen: string[] = [];
 
+  // Amount range is evaluated against numbers resolved ONCE (not per order),
+  // so the hot detection path does zero redundant coercion work.
+  const minP = Number(u.min_price) || 0;
+  const maxP = Number(u.max_price) || Number.MAX_SAFE_INTEGER;
+
   const friendly = (raw: string): string => {
     const r = raw.toLowerCase();
     if (/stc/.test(r)) return "STC Pay";
@@ -947,27 +952,31 @@ export async function tickUser(u: BotUser): Promise<void> {
     const userTag = u.label || u.username;
     const slotTag = `${u.label || u.username} (Slot ${u.slot})`;
 
+    // ---- ZERO-LAG FILTER EVAL (fully synchronous, no awaits) ----------------
     let skipReason = "";
-    if (amt < Number(u.min_price) || amt > Number(u.max_price)) {
-      skipReason = `Price ${amt} SAR outside range ${u.min_price}–${u.max_price}`;
+    if (amt < minP || amt > maxP) {
+      skipReason = `Price ${amt} SAR outside range ${minP}–${maxP}`;
     } else if (allowedTokens.length > 0 && !allowedTokens.some((t) => pay.includes(t))) {
       skipReason = `Payment "${payLabel}" not in selected filters`;
     }
     if (skipReason) {
-      await log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
-      await sendDualTelegram(
+      // Non-blocking: never let a skip notification delay a real match.
+      void log(u.id, u.slot, "warn", `[ORDER SKIPPED] ${oid} · ${amt} SAR · ${payLabel} — ${skipReason}`);
+      void sendDualTelegram(
         u,
         `⚠️ <b>[ORDER SKIPPED]</b>\nUser: ${userTag}\nOrder #: <code>${oid}</code>\nAmount: ${amt} SAR\nPayment: ${payLabel}\nReason: ${skipReason}`,
       );
       continue;
     }
 
-    await log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — entering AGGRESSIVE GRAB LOOP`);
+    // ---- TOP-PRIORITY INSTANT CLAIM ----------------------------------------
+    // The POST claim fires on this very line — BEFORE any logging, DB write or
+    // Telegram call — so nothing stands between detection and the grab.
+    const grabPromise = aggressiveGrab(u, token, o, oid);
+    void log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — instant claim fired (top priority)`);
 
-    // Fire the aggressive grab loop in the background so the polling cycle is
-    // not blocked. The loop itself never gives up unless the server explicitly
-    // confirms success or says the order is gone.
-    void aggressiveGrab(u, token, o, oid).then(async (res) => {
+    void grabPromise.then(async (res) => {
+
       if (res.ok) {
         await supabaseAdmin
           .from("bot_users")
