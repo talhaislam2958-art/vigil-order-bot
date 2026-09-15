@@ -155,17 +155,27 @@ function Gate({
       if (needsSetup) {
         if (pw.length < 6) throw new Error("Use at least 6 characters");
         if (pw !== pw2) throw new Error("Passwords do not match");
-        await setup({ data: { password: pw } });
-        toast.success("Master code set. Please sign in.");
+        const r = await setup({ data: { password: pw } });
         onSetupDone();
         setPw("");
         setPw2("");
+        toast.success("Master code saved. Unlocked.");
+        onUnlocked(r.token);
       } else {
         const r = await login({ data: { password: pw } });
         onUnlocked(r.token);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      const msg = e instanceof Error ? e.message : "Failed";
+      if (msg.includes("NEEDS_SETUP")) {
+        onNeedsSetup();
+        toast.error("No master code exists yet — set one now.");
+      } else if (msg.includes("already set")) {
+        onSetupDone();
+        toast.error("A master code already exists — enter it to unlock.");
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setBusy(false);
     }
