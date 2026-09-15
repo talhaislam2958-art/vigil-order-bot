@@ -38,17 +38,6 @@ export const getSetupState = createServerFn({ method: "GET" }).handler(async () 
   return { needsSetup: !data?.master_password_hash };
 });
 
-async function createSession() {
-  const supabaseAdmin = await getAdminClient();
-  const { data: sess, error } = await supabaseAdmin
-    .from("admin_sessions")
-    .insert({})
-    .select("token, expires_at")
-    .single();
-  if (error || !sess) throw new Error("Could not create session");
-  return { token: sess.token as string, expires_at: sess.expires_at as string };
-}
-
 export const setupMaster = createServerFn({ method: "POST" })
   .inputValidator((d: { password: string }) => z.object({ password: z.string().min(6).max(200) }).parse(d))
   .handler(async ({ data }) => {
@@ -57,27 +46,8 @@ export const setupMaster = createServerFn({ method: "POST" })
     if (cfg?.master_password_hash) throw new Error("Master code already set");
     const salt = crypto.randomUUID();
     const hash = await sha256Hex(salt + ":" + data.password);
-
-    // Upsert: the singleton config row may not exist yet, in which case a plain
-    // UPDATE silently affects zero rows and the code appears "not set" at login.
-    const { error: upsertError } = await supabaseAdmin
-      .from("app_config")
-      .upsert({ id: 1, master_password_hash: hash, master_salt: salt } as never, { onConflict: "id" });
-    if (upsertError) throw new Error(upsertError.message);
-
-    // Verify the write actually persisted before telling the user it succeeded.
-    const { data: check } = await supabaseAdmin
-      .from("app_config")
-      .select("master_password_hash, master_salt")
-      .eq("id", 1)
-      .maybeSingle();
-    if (!check?.master_password_hash || !check.master_salt) {
-      throw new Error("Could not save master code — please try again");
-    }
-
-    // Sign the user straight in so there is no window where the code looks unset.
-    const sess = await createSession();
-    return { ok: true as const, ...sess };
+    await supabaseAdmin.from("app_config").update({ master_password_hash: hash, master_salt: salt }).eq("id", 1);
+    return { ok: true };
   });
 
 export const loginMaster = createServerFn({ method: "POST" })
@@ -89,12 +59,16 @@ export const loginMaster = createServerFn({ method: "POST" })
       .select("master_password_hash, master_salt")
       .eq("id", 1)
       .maybeSingle();
-    if (!cfg?.master_password_hash || !cfg.master_salt) {
-      throw new Error("NEEDS_SETUP: no master code exists yet — set one now");
-    }
+    if (!cfg?.master_password_hash || !cfg.master_salt) throw new Error("Master code not set");
     const hash = await sha256Hex(cfg.master_salt + ":" + data.password);
     if (hash !== cfg.master_password_hash) throw new Error("Incorrect master code");
-    return await createSession();
+    const { data: sess, error } = await supabaseAdmin
+      .from("admin_sessions")
+      .insert({})
+      .select("token, expires_at")
+      .single();
+    if (error || !sess) throw new Error("Could not create session");
+    return { token: sess.token as string, expires_at: sess.expires_at as string };
   });
 
 export const logoutMaster = createServerFn({ method: "POST" })
