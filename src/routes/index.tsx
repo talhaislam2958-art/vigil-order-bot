@@ -112,6 +112,7 @@ function App() {
             setToken(t);
           }}
           onSetupDone={() => setNeedsSetup(false)}
+          onNeedsSetup={() => setNeedsSetup(true)}
         />
       </>
     );
@@ -137,10 +138,12 @@ function Gate({
   needsSetup,
   onUnlocked,
   onSetupDone,
+  onNeedsSetup,
 }: {
   needsSetup: boolean;
   onUnlocked: (t: string) => void;
   onSetupDone: () => void;
+  onNeedsSetup: () => void;
 }) {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
