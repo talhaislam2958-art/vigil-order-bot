@@ -660,13 +660,15 @@ function pickIban(o: OrderRow): string {
   ]) || "N/A";
 }
 
-async function receiveOrderOnce(token: string, order: OrderRow) {
+async function receiveOrderOnce(token: string, order: OrderRow, userId?: string) {
   try {
     const r = await fetch(`${BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        ...MOBILE_HEADERS,
+        // Same device signature the slot polls with — a claim arriving from a
+        // different browser than the listing request would look synthetic.
+        ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
       },
       body: JSON.stringify(order),
       keepalive: true,
