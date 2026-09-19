@@ -1104,7 +1104,7 @@ async function keepAlive(): Promise<void> {
   try {
     await fetch(`${BASE}/captchaImage?_t=${Date.now()}`, {
       method: "GET",
-      headers: MOBILE_HEADERS,
+      headers: { ...MOBILE_HEADERS, ...profileHeaders(randomDeviceProfile()) },
       keepalive: true,
     });
   } catch {
