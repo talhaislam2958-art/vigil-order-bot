@@ -2,6 +2,12 @@
 // Imported only by server function handlers and the public cron route handler.
 
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import {
+  clearDeviceProfiles,
+  deviceProfileFor,
+  profileHeaders,
+  randomDeviceProfile,
+} from "@/lib/device-profiles";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
 
@@ -327,14 +333,27 @@ export function markSessionHealthy(userId: string): void {
   lastHealthyAt.set(userId, Date.now());
 }
 
-/** Fresh header set per session epoch — forces new sockets after a recycle. */
+/**
+ * Fresh header set per session epoch — forces new sockets after a recycle AND
+ * stamps this slot with its own randomized device fingerprint (User-Agent,
+ * Sec-Ch-Ua, platform, language) so every slot looks like a distinct genuine
+ * browser on a distinct device. The fingerprint is sticky for the session and
+ * re-rolled whenever the session recycles.
+ */
 function mobileHeaders(userId: string): Record<string, string> {
   const epoch = sessionEpoch.get(userId) ?? 0;
+  const profile = deviceProfileFor(`${userId}:${epoch}`);
   return {
     ...MOBILE_HEADERS,
+    ...profileHeaders(profile),
     "X-Session-Epoch": String(epoch),
     "X-Request-Id": `${epoch}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
   };
+}
+
+/** Name of the device signature a slot is currently presenting (for logs). */
+export function deviceSignatureFor(userId: string): string {
+  return deviceProfileFor(`${userId}:${sessionEpoch.get(userId) ?? 0}`).name;
 }
 
 /**
@@ -361,6 +380,9 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
   listLastAt = 0;
 
   // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
+  //    Dropping the old epoch's device fingerprints re-rolls this slot's
+  //    User-Agent / Sec-Ch-Ua signature for the new session.
+  clearDeviceProfiles(`${u.id}:`);
   sessionEpoch.set(u.id, epoch);
   invalidateAdminTelegramCache();
 
@@ -638,13 +660,15 @@ function pickIban(o: OrderRow): string {
   ]) || "N/A";
 }
 
-async function receiveOrderOnce(token: string, order: OrderRow) {
+async function receiveOrderOnce(token: string, order: OrderRow, userId?: string) {
   try {
     const r = await fetch(`${BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        ...MOBILE_HEADERS,
+        // Same device signature the slot polls with — a claim arriving from a
+        // different browser than the listing request would look synthetic.
+        ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
       },
       body: JSON.stringify(order),
       keepalive: true,
@@ -689,7 +713,7 @@ async function aggressiveGrab(
 
   while (Date.now() - start < MAX_MS && attempts < MAX_ATTEMPTS) {
     attempts++;
-    const res = await receiveOrderOnce(token, order);
+    const res = await receiveOrderOnce(token, order, u.id);
     last = res;
 
     // SUCCESS — server confirmed grab.
@@ -787,7 +811,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} · Device: ${deviceSignatureFor(u.id)} (keep-alive · no-cache)`,
   );
 
   let list = await getOrderList(token, u.id);
@@ -1080,7 +1104,7 @@ async function keepAlive(): Promise<void> {
   try {
     await fetch(`${BASE}/captchaImage?_t=${Date.now()}`, {
       method: "GET",
-      headers: MOBILE_HEADERS,
+      headers: { ...MOBILE_HEADERS, ...profileHeaders(randomDeviceProfile()) },
       keepalive: true,
     });
   } catch {
