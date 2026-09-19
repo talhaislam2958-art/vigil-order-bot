@@ -2,6 +2,12 @@
 // Imported only by server function handlers and the public cron route handler.
 
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import {
+  clearDeviceProfiles,
+  deviceProfileFor,
+  profileHeaders,
+  randomDeviceProfile,
+} from "@/lib/device-profiles";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
 
