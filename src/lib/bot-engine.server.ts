@@ -380,6 +380,9 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
   listLastAt = 0;
 
   // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
+  //    Dropping the old epoch's device fingerprints re-rolls this slot's
+  //    User-Agent / Sec-Ch-Ua signature for the new session.
+  clearDeviceProfiles(`${u.id}:`);
   sessionEpoch.set(u.id, epoch);
   invalidateAdminTelegramCache();
 
