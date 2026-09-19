@@ -713,7 +713,7 @@ async function aggressiveGrab(
 
   while (Date.now() - start < MAX_MS && attempts < MAX_ATTEMPTS) {
     attempts++;
-    const res = await receiveOrderOnce(token, order);
+    const res = await receiveOrderOnce(token, order, u.id);
     last = res;
 
     // SUCCESS — server confirmed grab.
