@@ -327,14 +327,27 @@ export function markSessionHealthy(userId: string): void {
   lastHealthyAt.set(userId, Date.now());
 }
 
-/** Fresh header set per session epoch — forces new sockets after a recycle. */
+/**
+ * Fresh header set per session epoch — forces new sockets after a recycle AND
+ * stamps this slot with its own randomized device fingerprint (User-Agent,
+ * Sec-Ch-Ua, platform, language) so every slot looks like a distinct genuine
+ * browser on a distinct device. The fingerprint is sticky for the session and
+ * re-rolled whenever the session recycles.
+ */
 function mobileHeaders(userId: string): Record<string, string> {
   const epoch = sessionEpoch.get(userId) ?? 0;
+  const profile = deviceProfileFor(`${userId}:${epoch}`);
   return {
     ...MOBILE_HEADERS,
+    ...profileHeaders(profile),
     "X-Session-Epoch": String(epoch),
     "X-Request-Id": `${epoch}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
   };
+}
+
+/** Name of the device signature a slot is currently presenting (for logs). */
+export function deviceSignatureFor(userId: string): string {
+  return deviceProfileFor(`${userId}:${sessionEpoch.get(userId) ?? 0}`).name;
 }
 
 /**
