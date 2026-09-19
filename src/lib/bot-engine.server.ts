@@ -811,7 +811,7 @@ export async function tickUser(u: BotUser): Promise<void> {
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} · Device: ${deviceSignatureFor(u.id)} (keep-alive · no-cache)`,
   );
 
   let list = await getOrderList(token, u.id);
