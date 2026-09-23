@@ -44,6 +44,10 @@ export const Route = createFileRoute("/")({
     meta: [
       { title: "Order Receiver Bot — Cyber Control Center" },
       { name: "description", content: "Multi-user 24/7 order receiver bot dashboard with neon cyber UI and Telegram alerts." },
+      { property: "og:title", content: "Vigil Order Bot — Cyber Control Center" },
+      { property: "og:description", content: "Secure cloud control center for the 24/7 multi-user order receiver." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       { name: "robots", content: "noindex,nofollow" },
     ],
   }),
