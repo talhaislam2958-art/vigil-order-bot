@@ -740,8 +740,10 @@ async function aggressiveGrab(
  * or cannot be built, preserving uptime.
  */
 export async function tickUser(u: BotUser): Promise<void> {
+  if (sniperActive()) return; // SNIPER MODE: all polling frozen during a claim
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
   if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
+
 
   // ---- ACTIVE HEALTH CHECK: proactive 7-minute session refresh --------------
   if (await healthGate(u)) return; // fresh session built; next tick runs clean
@@ -784,12 +786,14 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 
   const tokenTag = selected ? `Token #${selected.index}/${pool!.length}` : `Single-Session`;
-  await log(
+  // Non-blocking: logging must never sit between us and the direct fetch.
+  void log(
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → DIRECT GET /bus/user/order/list · ${tokenTag} (direct · keep-alive · no-cache)`,
   );
+
 
   let list = await getOrderList(token, u.id);
 
