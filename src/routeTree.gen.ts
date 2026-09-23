@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiAdminRouteImport } from './routes/api/admin'
 import { Route as ApiPublicHooksPollRouteImport } from './routes/api/public/hooks/poll'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAdminRoute = ApiAdminRouteImport.update({
+  id: '/api/admin',
+  path: '/api/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicHooksPollRoute = ApiPublicHooksPollRouteImport.update({
@@ -25,27 +31,31 @@ const ApiPublicHooksPollRoute = ApiPublicHooksPollRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/public/hooks/poll': typeof ApiPublicHooksPollRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/public/hooks/poll': typeof ApiPublicHooksPollRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/admin': typeof ApiAdminRoute
   '/api/public/hooks/poll': typeof ApiPublicHooksPollRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/hooks/poll'
+  fullPaths: '/' | '/api/admin' | '/api/public/hooks/poll'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/hooks/poll'
-  id: '__root__' | '/' | '/api/public/hooks/poll'
+  to: '/' | '/api/admin' | '/api/public/hooks/poll'
+  id: '__root__' | '/' | '/api/admin' | '/api/public/hooks/poll'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiAdminRoute: typeof ApiAdminRoute
   ApiPublicHooksPollRoute: typeof ApiPublicHooksPollRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/admin': {
+      id: '/api/admin'
+      path: '/api/admin'
+      fullPath: '/api/admin'
+      preLoaderRoute: typeof ApiAdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/hooks/poll': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiAdminRoute: ApiAdminRoute,
   ApiPublicHooksPollRoute: ApiPublicHooksPollRoute,
 }
 export const routeTree = rootRouteImport
