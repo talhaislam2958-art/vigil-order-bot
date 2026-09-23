@@ -498,25 +498,27 @@ function focusIndex(userId: string, tokenIndex: number): void {
   if (pos >= 0) currentIndex.set(userId, pos);
 }
 
-// ---- Global outbound request throttle (list endpoint) ----
-// The upstream rate-limits by IP, and all slots share the worker's IP.
-// Serialize list fetches with a minimum gap so N concurrent slots never
-// burst the server. Receive (grab) requests intentionally bypass this so
-// a detected order still gets an aggressive burst.
-const LIST_MIN_GAP_MS = 400;
-let listGateChain: Promise<void> = Promise.resolve();
-let listLastAt = 0;
-function acquireListSlot(): Promise<() => void> {
-  let release!: () => void;
-  const held = new Promise<void>((res) => (release = res));
-  const wait = listGateChain.then(async () => {
-    const gap = LIST_MIN_GAP_MS - (Date.now() - listLastAt);
-    if (gap > 0) await sleep(gap);
-    listLastAt = Date.now();
-  });
-  listGateChain = wait.then(() => held);
-  return wait.then(() => release);
+// ---- DIRECT MODE ----------------------------------------------------------
+// All order-list and order-receive calls now go straight from the cloud worker
+// to the upstream API. The former serialized outbound gate (a shared 400ms
+// queue) has been removed: it added hundreds of ms of latency per tick and was
+// the main cause of stale/empty responses.
+const LIST_MIN_GAP_MS = 0;
+
+// ---- SNIPER MODE LOCK -----------------------------------------------------
+// The exact millisecond an order is detected, polling for every slot is frozen
+// so 100% of outbound capacity goes to the claim request.
+let sniperUntil = 0;
+export function sniperActive(): boolean {
+  return sniperUntil > Date.now();
 }
+function engageSniper(ms = 13_000): void {
+  sniperUntil = Date.now() + ms;
+}
+function releaseSniper(): void {
+  sniperUntil = 0;
+}
+
 
 async function getOrderList(
   token: string,
