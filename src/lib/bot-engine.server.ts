@@ -503,7 +503,6 @@ function focusIndex(userId: string, tokenIndex: number): void {
 // to the upstream API. The former serialized outbound gate (a shared 400ms
 // queue) has been removed: it added hundreds of ms of latency per tick and was
 // the main cause of stale/empty responses.
-const LIST_MIN_GAP_MS = 0;
 
 // ---- SNIPER MODE LOCK -----------------------------------------------------
 // The exact millisecond an order is detected, polling for every slot is frozen
