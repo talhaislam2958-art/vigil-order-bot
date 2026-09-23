@@ -524,7 +524,7 @@ async function getOrderList(
   token: string,
   userId?: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
-  const release = await acquireListSlot();
+  // DIRECT: no queue, no gate — straight to the upstream endpoint.
   const t0 = Date.now();
   try {
     const url =
