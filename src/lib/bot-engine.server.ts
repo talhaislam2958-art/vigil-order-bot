@@ -4,8 +4,6 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
-// Orders (list + receive) go DIRECT to the p2p order API — no proxy, no internal hops.
-const ORDER_BASE = "https://h5.parttime.mobi/p2p-api";
 
 export type BotUser = {
   id: string;
@@ -358,9 +356,9 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
   poolBuilding.delete(u.id);
   perUserCooldownUntil.delete(u.id);
 
-  // 2. Release any stale sniper lock so the new loop starts clean.
-  releaseSniper();
-
+  // 2. Reset shared outbound gate so a wedged chain can't block the new loop.
+  listGateChain = Promise.resolve();
+  listLastAt = 0;
 
   // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
   sessionEpoch.set(u.id, epoch);
@@ -500,38 +498,36 @@ function focusIndex(userId: string, tokenIndex: number): void {
   if (pos >= 0) currentIndex.set(userId, pos);
 }
 
-// ---- DIRECT MODE ----------------------------------------------------------
-// All order-list and order-receive calls now go straight from the cloud worker
-// to the upstream API. The former serialized outbound gate (a shared 400ms
-// queue) has been removed: it added hundreds of ms of latency per tick and was
-// the main cause of stale/empty responses.
-
-// ---- SNIPER MODE LOCK -----------------------------------------------------
-// The exact millisecond an order is detected, polling for every slot is frozen
-// so 100% of outbound capacity goes to the claim request.
-let sniperUntil = 0;
-export function sniperActive(): boolean {
-  return sniperUntil > Date.now();
+// ---- Global outbound request throttle (list endpoint) ----
+// The upstream rate-limits by IP, and all slots share the worker's IP.
+// Serialize list fetches with a minimum gap so N concurrent slots never
+// burst the server. Receive (grab) requests intentionally bypass this so
+// a detected order still gets an aggressive burst.
+const LIST_MIN_GAP_MS = 400;
+let listGateChain: Promise<void> = Promise.resolve();
+let listLastAt = 0;
+function acquireListSlot(): Promise<() => void> {
+  let release!: () => void;
+  const held = new Promise<void>((res) => (release = res));
+  const wait = listGateChain.then(async () => {
+    const gap = LIST_MIN_GAP_MS - (Date.now() - listLastAt);
+    if (gap > 0) await sleep(gap);
+    listLastAt = Date.now();
+  });
+  listGateChain = wait.then(() => held);
+  return wait.then(() => release);
 }
-function engageSniper(ms = 13_000): void {
-  sniperUntil = Date.now() + ms;
-}
-function releaseSniper(): void {
-  sniperUntil = 0;
-}
-
 
 async function getOrderList(
   token: string,
   userId?: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
-  // DIRECT: no queue, no gate — straight to the upstream endpoint.
+  const release = await acquireListSlot();
   const t0 = Date.now();
   try {
     const url =
-      `${ORDER_BASE}/bus/user/order/list?pageNum=1&pageSize=15` +
-      `&orderByColumn=${encodeURIComponent("createTime asc, receiverName asc")}&isAsc=asc` +
-      `&_t=${Date.now()}`;
+      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
+      `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
     const r = await fetch(url, {
       method: "GET",
       headers: {
@@ -560,8 +556,9 @@ async function getOrderList(
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
+  } finally {
+    release();
   }
-
 }
 
 
@@ -643,7 +640,7 @@ function pickIban(o: OrderRow): string {
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
-    const r = await fetch(`${ORDER_BASE}/bus/user/order/receive`, {
+    const r = await fetch(`${BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -742,10 +739,8 @@ async function aggressiveGrab(
  * or cannot be built, preserving uptime.
  */
 export async function tickUser(u: BotUser): Promise<void> {
-  if (sniperActive()) return; // SNIPER MODE: all polling frozen during a claim
   const cooldownUntil = perUserCooldownUntil.get(u.id) ?? 0;
   if (cooldownUntil > Date.now()) return; // honor per-user cooldown lock
-
 
   // ---- ACTIVE HEALTH CHECK: proactive 7-minute session refresh --------------
   if (await healthGate(u)) return; // fresh session built; next tick runs clean
@@ -788,14 +783,12 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 
   const tokenTag = selected ? `Token #${selected.index}/${pool!.length}` : `Single-Session`;
-  // Non-blocking: logging must never sit between us and the direct fetch.
-  void log(
+  await log(
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → DIRECT GET /bus/user/order/list · ${tokenTag} (direct · keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
   );
-
 
   let list = await getOrderList(token, u.id);
 
@@ -821,11 +814,6 @@ export async function tickUser(u: BotUser): Promise<void> {
   }
 
   if (list.status === 200) markSessionHealthy(u.id);
-
-  // ---- SNIPER TRIGGER: fires on the exact millisecond rows are present -------
-  // Freeze every slot's polling immediately so the claim request owns the wire.
-  if (list.orders.length > 0) engageSniper();
-
 
   const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
   const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
@@ -884,7 +872,7 @@ export async function tickUser(u: BotUser): Promise<void> {
   // ---- SUCCESS ---------------------------------------------------------------
   if (selected) {
     selected.hits += 1;
-    void log(
+    await log(
       u.id,
       u.slot,
       "success",
@@ -895,7 +883,7 @@ export async function tickUser(u: BotUser): Promise<void> {
       selected.hits = 0;
       if (nextIdx) {
         focusIndex(u.id, nextIdx);
-        void log(
+        await log(
           u.id,
           u.slot,
           "info",
@@ -904,11 +892,11 @@ export async function tickUser(u: BotUser): Promise<void> {
       }
     }
   } else {
-    void log(
+    await log(
       u.id,
       u.slot,
       "success",
-      `[Hit Success] - Single-Session · DIRECT · Status 200 OK · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
+      `[Hit Success] - Single-Session · Status 200 OK · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
     );
   }
 
@@ -919,7 +907,6 @@ export async function tickUser(u: BotUser): Promise<void> {
       .eq("id", u.id);
     return;
   }
-
 
   const orders = list.orders;
   const seen = new Set(u.seen_order_ids || []);
@@ -940,8 +927,6 @@ export async function tickUser(u: BotUser): Promise<void> {
     allowedTokens.push(...toks);
   }
   const newSeen: string[] = [];
-  const claims: Promise<void>[] = [];
-
 
   // Amount range is evaluated against numbers resolved ONCE (not per order),
   // so the hot detection path does zero redundant coercion work.
@@ -984,14 +969,13 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    // ---- SNIPER MODE: TOP-PRIORITY INSTANT CLAIM ---------------------------
-    // Polling is already frozen. The direct POST claim fires on this very line —
-    // BEFORE any logging, DB write or Telegram call.
+    // ---- TOP-PRIORITY INSTANT CLAIM ----------------------------------------
+    // The POST claim fires on this very line — BEFORE any logging, DB write or
+    // Telegram call — so nothing stands between detection and the grab.
     const grabPromise = aggressiveGrab(u, token, o, oid);
-    void log(u.id, u.slot, "success", `[SNIPER] Order ${oid} detected — polling paused, direct claim fired instantly`);
+    void log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — instant claim fired (top priority)`);
 
-    const settled = grabPromise.then(async (res) => {
-
+    void grabPromise.then(async (res) => {
 
       if (res.ok) {
         await supabaseAdmin
@@ -1062,25 +1046,14 @@ export async function tickUser(u: BotUser): Promise<void> {
         `[GRAB HANDLER RECOVERED] ${oid} · ${e instanceof Error ? e.message : String(e)}`,
       );
     });
-    claims.push(settled);
-  }
 
-  // Keep polling frozen until every claim has fully settled, then release.
-  if (claims.length) {
-    try {
-      await Promise.all(claims);
-    } catch {
-      /* individual claims already self-handle their errors */
-    }
   }
-  releaseSniper();
 
   if (newSeen.length) {
     const merged = Array.from(new Set([...(u.seen_order_ids || []), ...newSeen])).slice(-200);
     await supabaseAdmin.from("bot_users").update({ seen_order_ids: merged }).eq("id", u.id);
   }
 }
-
 
 // ============================================================================
 // MEMORY SWEEP + KEEP-ALIVE
@@ -1116,10 +1089,8 @@ async function keepAlive(): Promise<void> {
 }
 
 /**
- * DIRECT + SNIPER polling cycle. Every slot polls the upstream API directly at
- * exactly its configured `polling_interval_ms` — no proxy hop, no outbound
- * queue, no jitter. When any slot detects an order, sniper mode freezes the
- * whole cycle until that claim finishes.
+ * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
+ * `polling_interval_ms`. No Math.random(), no jitter, no variation.
  */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
   const start = Date.now();
@@ -1129,8 +1100,11 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     .eq("is_active", true);
   if (error || !users) return { ticked: 0 };
 
-  // DIRECT MODE: no stagger — every slot starts firing immediately.
-  const state = users.map((u) => ({ u: u as BotUser, nextAt: start }));
+  // Stagger initial start per slot so N active slots don't all fire at t=0.
+  // Combined with the global list-request gate, this smooths the outbound
+  // request stream across the shared worker IP.
+  const stagger = LIST_MIN_GAP_MS;
+  const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
   let ticks = 0;
 
   try {
@@ -1143,21 +1117,17 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
   }
   void keepAlive();
 
+
+
   while (Date.now() - start < budgetMs) {
-    // SNIPER MODE: hold the entire cycle while a claim is in flight.
-    if (sniperActive()) {
-      await sleep(20);
-      continue;
-    }
     const now = Date.now();
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
-      const sleepMs = Math.max(20, Math.min(...state.map((s) => s.nextAt - now)));
+      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
       await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
       continue;
     }
     await Promise.all(
-
       due.map(async (s) => {
         try {
           await tickUser(s.u);
