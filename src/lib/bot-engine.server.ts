@@ -938,6 +938,8 @@ export async function tickUser(u: BotUser): Promise<void> {
     allowedTokens.push(...toks);
   }
   const newSeen: string[] = [];
+  const claims: Promise<void>[] = [];
+
 
   // Amount range is evaluated against numbers resolved ONCE (not per order),
   // so the hot detection path does zero redundant coercion work.
