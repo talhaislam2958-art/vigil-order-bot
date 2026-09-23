@@ -1,5 +1,4 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useState } from "react";
 import { toast, Toaster } from "sonner";
 import {
@@ -38,7 +37,7 @@ import {
   getAdminTelegramSettings,
   setAdminTelegramSettings,
   testAdminTelegram,
-} from "@/lib/admin.functions";
+} from "@/lib/admin-client";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -83,7 +82,7 @@ function App() {
   const [bootChecked, setBootChecked] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [theme, setTheme] = useTheme();
-  const checkSetup = useServerFn(getSetupState);
+  const checkSetup = getSetupState;
 
   useEffect(() => {
     setToken(typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null);
@@ -145,8 +144,8 @@ function Gate({
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
-  const setup = useServerFn(setupMaster);
-  const login = useServerFn(loginMaster);
+  const setup = setupMaster;
+  const login = loginMaster;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -225,15 +224,15 @@ function Gate({
   );
 }
 
-type BotUser = Awaited<ReturnType<typeof listUsers>>[number];
-type LogRow = Awaited<ReturnType<typeof getLogs>>[number];
+type BotUser = import("@/lib/admin-client").BotUserRow;
+type LogRow = import("@/lib/admin-client").LogRow;
 
 function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogout: () => void; theme: Theme; setTheme: (t: Theme) => void }) {
   const router = useRouter();
-  const list = useServerFn(listUsers);
-  const logoutFn = useServerFn(logoutMaster);
-  const pollFn = useServerFn(manualPoll);
-  const getLogsFn = useServerFn(getLogs);
+  const list = listUsers;
+  const logoutFn = logoutMaster;
+  const pollFn = manualPoll;
+  const getLogsFn = getLogs;
   const [users, setUsers] = useState<BotUser[]>([]);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -370,8 +369,7 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
                 <button
                   onClick={async () => {
                     try {
-                      const { clearLogs: clr } = await import("@/lib/admin.functions");
-                      await clr({ data: { token } });
+                      await clearLogs({ data: { token } });
                       await refresh();
                       toast.success("Global logs cleared");
                     } catch (e) {
@@ -406,9 +404,9 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
 }
 
 function AdminTelegramPanel({ token }: { token: string }) {
-  const getFn = useServerFn(getAdminTelegramSettings);
-  const setFn = useServerFn(setAdminTelegramSettings);
-  const testFn = useServerFn(testAdminTelegram);
+  const getFn = getAdminTelegramSettings;
+  const setFn = setAdminTelegramSettings;
+  const testFn = testAdminTelegram;
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -594,11 +592,11 @@ function UserCard({
   logs: LogRow[];
   onChanged: () => void;
 }) {
-  const updateFn = useServerFn(updateUser);
-  const verifyFn = useServerFn(verifyUser);
-  const testFn = useServerFn(testTelegram);
-  const clearFn = useServerFn(clearLogs);
-  const deleteFn = useServerFn(deleteUser);
+  const updateFn = updateUser;
+  const verifyFn = verifyUser;
+  const testFn = testTelegram;
+  const clearFn = clearLogs;
+  const deleteFn = deleteUser;
 
   const isVerified = u.status === "authorized" || u.status === "running" || !!u.auth_token_at;
 
