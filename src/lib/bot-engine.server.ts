@@ -820,6 +820,11 @@ export async function tickUser(u: BotUser): Promise<void> {
 
   if (list.status === 200) markSessionHealthy(u.id);
 
+  // ---- SNIPER TRIGGER: fires on the exact millisecond rows are present -------
+  // Freeze every slot's polling immediately so the claim request owns the wire.
+  if (list.orders.length > 0) engageSniper();
+
+
   const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
   const rawSnippet = rawText.length > 800 ? rawText.slice(0, 800) + "…" : rawText;
   const serverMsg = (list.raw as { msg?: string } | null)?.msg ?? "";
@@ -877,7 +882,7 @@ export async function tickUser(u: BotUser): Promise<void> {
   // ---- SUCCESS ---------------------------------------------------------------
   if (selected) {
     selected.hits += 1;
-    await log(
+    void log(
       u.id,
       u.slot,
       "success",
@@ -888,7 +893,7 @@ export async function tickUser(u: BotUser): Promise<void> {
       selected.hits = 0;
       if (nextIdx) {
         focusIndex(u.id, nextIdx);
-        await log(
+        void log(
           u.id,
           u.slot,
           "info",
@@ -897,16 +902,14 @@ export async function tickUser(u: BotUser): Promise<void> {
       }
     }
   } else {
-    await log(
+    void log(
       u.id,
       u.slot,
       "success",
-      `[Hit Success] - Single-Session · Status 200 OK · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
+      `[Hit Success] - Single-Session · DIRECT · Status 200 OK · ${list.ms}ms · rows=${list.orders.length} · [RAW DATA]: ${rawSnippet}`,
     );
   }
 
-  if (list.orders.length === 0) {
-    await supabaseAdmin
       .from("bot_users")
       .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
       .eq("id", u.id);
