@@ -4,6 +4,8 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
+// Orders (list + receive) go DIRECT to the p2p order API — no proxy, no internal hops.
+const ORDER_BASE = "https://h5.parttime.mobi/p2p-api";
 
 export type BotUser = {
   id: string;
@@ -527,8 +529,9 @@ async function getOrderList(
   const t0 = Date.now();
   try {
     const url =
-      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
-      `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
+      `${ORDER_BASE}/bus/user/order/list?pageNum=1&pageSize=15` +
+      `&orderByColumn=${encodeURIComponent("createTime asc, receiverName asc")}&isAsc=asc` +
+      `&_t=${Date.now()}`;
     const r = await fetch(url, {
       method: "GET",
       headers: {
@@ -640,7 +643,7 @@ function pickIban(o: OrderRow): string {
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
-    const r = await fetch(`${BASE}/bus/user/order/receive`, {
+    const r = await fetch(`${ORDER_BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
