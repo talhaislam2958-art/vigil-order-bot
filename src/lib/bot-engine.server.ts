@@ -1058,14 +1058,25 @@ export async function tickUser(u: BotUser): Promise<void> {
         `[GRAB HANDLER RECOVERED] ${oid} · ${e instanceof Error ? e.message : String(e)}`,
       );
     });
-
+    claims.push(settled);
   }
+
+  // Keep polling frozen until every claim has fully settled, then release.
+  if (claims.length) {
+    try {
+      await Promise.all(claims);
+    } catch {
+      /* individual claims already self-handle their errors */
+    }
+  }
+  releaseSniper();
 
   if (newSeen.length) {
     const merged = Array.from(new Set([...(u.seen_order_ids || []), ...newSeen])).slice(-200);
     await supabaseAdmin.from("bot_users").update({ seen_order_ids: merged }).eq("id", u.id);
   }
 }
+
 
 // ============================================================================
 // MEMORY SWEEP + KEEP-ALIVE
