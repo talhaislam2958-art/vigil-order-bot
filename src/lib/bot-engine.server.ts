@@ -643,7 +643,7 @@ function pickIban(o: OrderRow): string {
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
   try {
-    const r = await fetch(`${BASE}/bus/user/order/receive`, {
+    const r = await fetch(`${ORDER_BASE}/bus/user/order/receive`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
