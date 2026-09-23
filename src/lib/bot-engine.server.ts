@@ -558,9 +558,8 @@ async function getOrderList(
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
-  } finally {
-    release();
   }
+
 }
 
 
