@@ -529,8 +529,9 @@ async function getOrderList(
   const t0 = Date.now();
   try {
     const url =
-      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
-      `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
+      `${ORDER_BASE}/bus/user/order/list?pageNum=1&pageSize=15` +
+      `&orderByColumn=${encodeURIComponent("createTime asc, receiverName asc")}&isAsc=asc` +
+      `&_t=${Date.now()}`;
     const r = await fetch(url, {
       method: "GET",
       headers: {
