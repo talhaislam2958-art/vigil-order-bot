@@ -980,13 +980,14 @@ export async function tickUser(u: BotUser): Promise<void> {
       continue;
     }
 
-    // ---- TOP-PRIORITY INSTANT CLAIM ----------------------------------------
-    // The POST claim fires on this very line — BEFORE any logging, DB write or
-    // Telegram call — so nothing stands between detection and the grab.
+    // ---- SNIPER MODE: TOP-PRIORITY INSTANT CLAIM ---------------------------
+    // Polling is already frozen. The direct POST claim fires on this very line —
+    // BEFORE any logging, DB write or Telegram call.
     const grabPromise = aggressiveGrab(u, token, o, oid);
-    void log(u.id, u.slot, "success", `[DETECTION] Order ${oid} found — instant claim fired (top priority)`);
+    void log(u.id, u.slot, "success", `[SNIPER] Order ${oid} detected — polling paused, direct claim fired instantly`);
 
-    void grabPromise.then(async (res) => {
+    const settled = grabPromise.then(async (res) => {
+
 
       if (res.ok) {
         await supabaseAdmin
