@@ -910,11 +910,14 @@ export async function tickUser(u: BotUser): Promise<void> {
     );
   }
 
+  if (list.orders.length === 0) {
+    await supabaseAdmin
       .from("bot_users")
       .update({ last_polled_at: new Date().toISOString(), status: "running", status_message: "Authorized / Running" })
       .eq("id", u.id);
     return;
   }
+
 
   const orders = list.orders;
   const seen = new Set(u.seen_order_ids || []);
