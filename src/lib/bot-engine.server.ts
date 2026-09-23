@@ -1114,8 +1114,10 @@ async function keepAlive(): Promise<void> {
 }
 
 /**
- * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
- * `polling_interval_ms`. No Math.random(), no jitter, no variation.
+ * DIRECT + SNIPER polling cycle. Every slot polls the upstream API directly at
+ * exactly its configured `polling_interval_ms` — no proxy hop, no outbound
+ * queue, no jitter. When any slot detects an order, sniper mode freezes the
+ * whole cycle until that claim finishes.
  */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
   const start = Date.now();
@@ -1125,11 +1127,8 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
     .eq("is_active", true);
   if (error || !users) return { ticked: 0 };
 
-  // Stagger initial start per slot so N active slots don't all fire at t=0.
-  // Combined with the global list-request gate, this smooths the outbound
-  // request stream across the shared worker IP.
-  const stagger = LIST_MIN_GAP_MS;
-  const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
+  // DIRECT MODE: no stagger — every slot starts firing immediately.
+  const state = users.map((u) => ({ u: u as BotUser, nextAt: start }));
   let ticks = 0;
 
   try {
@@ -1142,17 +1141,21 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
   }
   void keepAlive();
 
-
-
   while (Date.now() - start < budgetMs) {
+    // SNIPER MODE: hold the entire cycle while a claim is in flight.
+    if (sniperActive()) {
+      await sleep(20);
+      continue;
+    }
     const now = Date.now();
     const due = state.filter((s) => s.nextAt <= now);
     if (due.length === 0) {
-      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
+      const sleepMs = Math.max(20, Math.min(...state.map((s) => s.nextAt - now)));
       await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
       continue;
     }
     await Promise.all(
+
       due.map(async (s) => {
         try {
           await tickUser(s.u);
