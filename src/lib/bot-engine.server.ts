@@ -356,9 +356,9 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
   poolBuilding.delete(u.id);
   perUserCooldownUntil.delete(u.id);
 
-  // 2. Reset shared outbound gate so a wedged chain can't block the new loop.
-  listGateChain = Promise.resolve();
-  listLastAt = 0;
+  // 2. Release any stale sniper lock so the new loop starts clean.
+  releaseSniper();
+
 
   // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
   sessionEpoch.set(u.id, epoch);
