@@ -4,6 +4,8 @@
 import { supabaseAdmin } from "@/integrations/supabase/client.server";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
+// Orders (list + receive) go DIRECT to the p2p order API — no proxy, no internal hops.
+const ORDER_BASE = "https://h5.parttime.mobi/p2p-api";
 
 export type BotUser = {
   id: string;
