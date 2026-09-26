@@ -880,7 +880,9 @@ export async function tickUser(u: BotUser): Promise<void> {
       u.id,
       u.slot,
       "error",
-      `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} · [RAW DATA]: ${rawSnippet}`,
+      list.status === 0
+        ? `[NETWORK ERROR] Slot ${u.slot} cannot reach server: ${list.error || "connection failed"} (firewall/DNS/timeout?) · ${list.ms}ms`
+        : `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} · ${serverMsg || list.error || ""} · [RAW DATA]: ${rawSnippet}`,
     );
     return;
   }
