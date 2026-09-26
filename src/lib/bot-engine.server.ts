@@ -70,6 +70,14 @@ export async function log(
   message: string,
   meta?: unknown,
 ) {
+  // Mirror every engine log to stdout so `pm2 logs` on a VPS shows the same
+  // feed as the dashboard terminal (DB insert alone is invisible to PM2).
+  const ts = new Date().toISOString();
+  const tag = slot !== null ? `slot=${slot}` : "global";
+  const line = `[${ts}] [${level.toUpperCase()}] [${tag}] ${message}`;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
   try {
     await supabaseAdmin.from("bot_logs").insert({
       user_id,
@@ -524,10 +532,12 @@ async function getOrderList(
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
   const release = await acquireListSlot();
   const t0 = Date.now();
+  const url =
+    `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
+    `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
+  // Verbose stdout trace for VPS/PM2: exact request URL up front.
+  console.log(`[API CALL] GET ${url}`);
   try {
-    const url =
-      `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
-      `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
     const r = await fetch(url, {
       method: "GET",
       headers: {
@@ -537,24 +547,30 @@ async function getOrderList(
       keepalive: true,
     });
     const text = await r.text();
+    const ms = Date.now() - t0;
+    // Full server response to stdout — nothing is swallowed.
+    console.log(`[API RESPONSE] ${url} → HTTP ${r.status} · ${ms}ms · body: ${text || "(empty)"}`);
     let j: unknown = {};
     try {
       j = text ? JSON.parse(text) : {};
     } catch {
+      console.error(`[API ERROR] Non-JSON response from order list: ${text.slice(0, 500)}`);
       return {
         status: r.status,
         orders: [],
         raw: text,
         error: `Parse error: ${text.slice(0, 200)}`,
         rateLimited: hasTooManyRequests(text),
-        ms: Date.now() - t0,
+        ms,
       };
     }
     const response = { data: j as { rows?: OrderRow[] } };
     const orders = response.data.rows || [];
-    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j), ms: Date.now() - t0 };
+    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j), ms };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
+    // Network-level failure (DNS, firewall, connection reset, timeout).
+    console.error(`[NETWORK ERROR] GET ${url} failed after ${Date.now() - t0}ms: ${error}`);
     return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
   } finally {
     release();
