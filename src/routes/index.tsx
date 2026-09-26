@@ -1,6 +1,6 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useState } from "react";
+import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast, Toaster } from "sonner";
 import {
   Activity,
@@ -120,17 +120,63 @@ function App() {
   return (
     <>
       <Toaster theme={theme} position="top-right" />
-      <Dashboard
-        token={token}
-        theme={theme}
-        setTheme={setTheme}
-        onLogout={() => {
+      <DashboardErrorBoundary
+        onSessionExpired={() => {
           localStorage.removeItem(TOKEN_KEY);
           setToken(null);
         }}
-      />
+      >
+        <Dashboard
+          token={token}
+          theme={theme}
+          setTheme={setTheme}
+          onLogout={() => {
+            localStorage.removeItem(TOKEN_KEY);
+            setToken(null);
+          }}
+        />
+      </DashboardErrorBoundary>
     </>
   );
+}
+
+// Catches any server-function error that escapes a component (e.g. an expired
+// master session surfacing outside a try/catch) so the screen never blanks:
+// session errors bounce back to the unlock gate, anything else shows a
+// recoverable error panel instead of a white screen.
+class DashboardErrorBoundary extends Component<
+  { children: ReactNode; onSessionExpired: () => void },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    if (/unauthor|session/i.test(error.message)) {
+      this.props.onSessionExpired();
+    }
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    if (/unauthor|session/i.test(error.message)) return null; // logout already triggered
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+        <XCircle className="size-10 text-destructive" />
+        <p className="text-sm text-muted-foreground">Something went wrong: {error.message}</p>
+        <button
+          className="rounded-md border border-border px-4 py-2 text-sm"
+          onClick={() => this.setState({ error: null })}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 }
 
 function Gate({
