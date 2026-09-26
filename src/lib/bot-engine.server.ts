@@ -655,17 +655,22 @@ function pickIban(o: OrderRow): string {
 }
 
 async function receiveOrderOnce(token: string, order: OrderRow) {
+  const url = `${BASE}/bus/user/order/receive`;
+  const body = JSON.stringify(order);
+  console.log(`[API CALL] POST ${url} · order=${order.orderNo ?? order.orderId ?? order.id ?? "?"} · payload: ${body.slice(0, 500)}`);
+  const t0 = Date.now();
   try {
-    const r = await fetch(`${BASE}/bus/user/order/receive`, {
+    const r = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         ...MOBILE_HEADERS,
       },
-      body: JSON.stringify(order),
+      body,
       keepalive: true,
     });
     const text = await r.text();
+    console.log(`[API RESPONSE] POST ${url} → HTTP ${r.status} · ${Date.now() - t0}ms · body: ${text || "(empty)"}`);
     let j: { code?: number; msg?: string } = {};
     try {
       j = text ? JSON.parse(text) : {};
@@ -675,7 +680,9 @@ async function receiveOrderOnce(token: string, order: OrderRow) {
     const confirmed = j.code === 200;
     return { status: r.status, ok: confirmed, code: j.code, msg: j.msg, raw: text };
   } catch (e) {
-    return { status: 0, ok: false, code: undefined as number | undefined, msg: e instanceof Error ? e.message : String(e), raw: "" };
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[NETWORK ERROR] POST ${url} failed after ${Date.now() - t0}ms: ${msg}`);
+    return { status: 0, ok: false, code: undefined as number | undefined, msg, raw: "" };
   }
 }
 
