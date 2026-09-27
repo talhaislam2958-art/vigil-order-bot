@@ -1068,17 +1068,51 @@ function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
   }
 }
 
+// Only ONE poll cycle may run at a time in this process. Overlapping cycles
+// (e.g. a cron hitting the endpoint more often than the cycle budget, or
+// several PM2 workers) each run their own loop and the slot ends up polling
+// far faster than its configured interval.
+let cycleRunning = false;
+
+// Live polling-interval cache: re-read from the database at most every 15s
+// so a value changed in the dashboard takes effect mid-cycle without a
+// restart, while keeping DB reads bounded.
+const intervalCache = new Map<string, { ms: number; at: number }>();
+const INTERVAL_CACHE_TTL_MS = 15_000;
+
+async function refreshIntervals(ids: string[]): Promise<void> {
+  const stale = ids.filter((id) => {
+    const c = intervalCache.get(id);
+    return !c || Date.now() - c.at > INTERVAL_CACHE_TTL_MS;
+  });
+  if (!stale.length) return;
+  const { data } = await supabaseAdmin
+    .from("bot_users")
+    .select("id, polling_interval_ms")
+    .in("id", stale);
+  for (const row of data ?? []) {
+    intervalCache.set(row.id, {
+      ms: Math.max(200, Math.round(row.polling_interval_ms || 1000)),
+      at: Date.now(),
+    });
+  }
+}
+
 /**
  * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
- * `polling_interval_ms`. No Math.random(), no jitter, no variation.
+ * `polling_interval_ms`, re-read live from the database. No Math.random(),
+ * no jitter, no variation.
  */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
+  if (cycleRunning) return { ticked: 0 };
+  cycleRunning = true;
   const start = Date.now();
-  const { data: users, error } = await supabaseAdmin
-    .from("bot_users")
-    .select("*")
-    .eq("is_active", true);
-  if (error || !users) return { ticked: 0 };
+  try {
+    const { data: users, error } = await supabaseAdmin
+      .from("bot_users")
+      .select("*")
+      .eq("is_active", true);
+    if (error || !users) return { ticked: 0 };
 
   // Stagger initial start per slot so N active slots don't all fire at t=0.
   // Combined with the global list-request gate, this smooths the outbound
