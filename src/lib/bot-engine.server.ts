@@ -1060,7 +1060,7 @@ export async function tickUser(u: BotUser): Promise<void> {
 // across hours of runtime. No background ping: it creates unnecessary traffic.
 // ============================================================================
 function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
-  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, networkFailureCount, sessionStartedAt, lastHealthyAt] as unknown as Map<string, unknown>[]) {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, networkFailureCount, sessionStartedAt, lastHealthyAt, intervalCache] as unknown as Map<string, unknown>[]) {
     for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
   }
   for (const key of Array.from(logInsertCount.keys())) {
@@ -1068,58 +1068,106 @@ function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
   }
 }
 
+// Only ONE poll cycle may run at a time in this process. Overlapping cycles
+// (e.g. a cron hitting the endpoint more often than the cycle budget, or
+// several PM2 workers) each run their own loop and the slot ends up polling
+// far faster than its configured interval.
+let cycleRunning = false;
+
+// Live polling-interval cache: re-read from the database at most every 15s
+// so a value changed in the dashboard takes effect mid-cycle without a
+// restart, while keeping DB reads bounded.
+const intervalCache = new Map<string, { ms: number; at: number }>();
+const INTERVAL_CACHE_TTL_MS = 15_000;
+
+async function refreshIntervals(ids: string[]): Promise<void> {
+  const stale = ids.filter((id) => {
+    const c = intervalCache.get(id);
+    return !c || Date.now() - c.at > INTERVAL_CACHE_TTL_MS;
+  });
+  if (!stale.length) return;
+  const { data } = await supabaseAdmin
+    .from("bot_users")
+    .select("id, polling_interval_ms")
+    .in("id", stale);
+  for (const row of data ?? []) {
+    intervalCache.set(row.id, {
+      ms: Math.max(200, Math.round(row.polling_interval_ms || 1000)),
+      at: Date.now(),
+    });
+  }
+}
+
 /**
  * STRICT FIXED INTERVAL polling. Each slot polls at exactly its configured
- * `polling_interval_ms`. No Math.random(), no jitter, no variation.
+ * `polling_interval_ms`, re-read live from the database. No Math.random(),
+ * no jitter, no variation.
  */
 export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }> {
+  if (cycleRunning) return { ticked: 0 };
+  cycleRunning = true;
   const start = Date.now();
-  const { data: users, error } = await supabaseAdmin
-    .from("bot_users")
-    .select("*")
-    .eq("is_active", true);
-  if (error || !users) return { ticked: 0 };
-
-  // Stagger initial start per slot so N active slots don't all fire at t=0.
-  // Combined with the global list-request gate, this smooths the outbound
-  // request stream across the shared worker IP.
-  const stagger = LIST_MIN_GAP_MS;
-  const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
-  let ticks = 0;
-
   try {
-    sweepMemory(
-      new Set(state.map((s) => s.u.id)),
-      new Set(state.map((s) => s.u.slot)),
-    );
-  } catch {
-    /* sweeping is never fatal */
-  }
+    const { data: users, error } = await supabaseAdmin
+      .from("bot_users")
+      .select("*")
+      .eq("is_active", true);
+    if (error || !users) return { ticked: 0 };
 
+    // Stagger initial start per slot so N active slots don't all fire at t=0.
+    // Combined with the global list-request gate, this smooths the outbound
+    // request stream across the shared worker IP.
+    const stagger = LIST_MIN_GAP_MS;
+    const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
+    let ticks = 0;
 
-
-  while (Date.now() - start < budgetMs) {
-    const now = Date.now();
-    const due = state.filter((s) => s.nextAt <= now);
-    if (due.length === 0) {
-      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-      await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
-      continue;
+    // Seed the live interval cache from the rows we just fetched.
+    for (const u of users) {
+      intervalCache.set(u.id, {
+        ms: Math.max(200, Math.round(u.polling_interval_ms || 1000)),
+        at: Date.now(),
+      });
     }
-    await Promise.all(
-      due.map(async (s) => {
-        try {
-          await tickUser(s.u);
-        } catch (e) {
-          await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
-        }
-        ticks++;
-        const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
-        const fixedInterval = Math.max(200, Math.round(s.u.polling_interval_ms || 1000));
-        // STRICT FIXED — exact interval, no jitter.
-        s.nextAt = Math.max(cooldownUntil, Date.now() + fixedInterval);
-      }),
-    );
+
+    try {
+      sweepMemory(
+        new Set(state.map((s) => s.u.id)),
+        new Set(state.map((s) => s.u.slot)),
+      );
+    } catch {
+      /* sweeping is never fatal */
+    }
+
+    while (Date.now() - start < budgetMs) {
+      const now = Date.now();
+      const due = state.filter((s) => s.nextAt <= now);
+      if (due.length === 0) {
+        const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
+        await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
+        continue;
+      }
+      // Re-read intervals from the database when the cache is stale, so a
+      // dashboard change to `polling_interval_ms` takes effect live.
+      await refreshIntervals(state.map((s) => s.u.id));
+      await Promise.all(
+        due.map(async (s) => {
+          try {
+            await tickUser(s.u);
+          } catch (e) {
+            await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          ticks++;
+          const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
+          const fixedInterval =
+            intervalCache.get(s.u.id)?.ms ??
+            Math.max(200, Math.round(s.u.polling_interval_ms || 1000));
+          // STRICT FIXED — exact interval, no jitter.
+          s.nextAt = Math.max(cooldownUntil, Date.now() + fixedInterval);
+        }),
+      );
+    }
+    return { ticked: ticks };
+  } finally {
+    cycleRunning = false;
   }
-  return { ticked: ticks };
 }
