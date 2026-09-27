@@ -39,7 +39,7 @@ import {
   getAdminTelegramSettings,
   setAdminTelegramSettings,
   testAdminTelegram,
-} from "@/lib/admin.functions";
+} from "../lib/admin.functions.ts";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -440,7 +440,7 @@ function Dashboard({ token, onLogout, theme, setTheme }: { token: string; onLogo
                 <button
                   onClick={async () => {
                     try {
-                      const { clearLogs: clr } = await import("@/lib/admin.functions");
+                      const { clearLogs: clr } = await import("../lib/admin.functions.ts");
                       await clr({ data: { token } });
                       await refresh();
                       toast.success("Global logs cleared");

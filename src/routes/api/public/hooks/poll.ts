@@ -14,7 +14,7 @@ export const Route = createFileRoute("/api/public/hooks/poll")({
             headers: { "Content-Type": "application/json" },
           });
         }
-        const { runPollCycle } = await import("@/lib/bot-engine.server");
+        const { runPollCycle } = await import("../../../../lib/bot-engine.server.ts");
         const result = await runPollCycle(8000);
         return Response.json({ ok: true, ...result, at: new Date().toISOString() });
       },
