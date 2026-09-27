@@ -568,7 +568,14 @@ async function getOrderList(
         ms,
       };
     }
-  const orders = (j as { data?: { rows?: OrderRow[] } })?.data?.rows;
+  // Live API returns rows at the top level: {"total":1,"rows":[...],"code":200}.
+  // Fall back to data.rows / data.list for other response shapes.
+  const jj = j as { rows?: OrderRow[]; data?: { rows?: OrderRow[]; list?: OrderRow[] } | OrderRow[] };
+  const orders = Array.isArray(jj?.rows)
+    ? jj.rows
+    : Array.isArray(jj?.data)
+      ? jj.data
+      : jj?.data?.rows ?? jj?.data?.list;
   return { status, orders: Array.isArray(orders) ? orders : [], raw: j, rateLimited: hasTooManyRequests(j), ms };
 }
 
