@@ -1114,46 +1114,60 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
       .eq("is_active", true);
     if (error || !users) return { ticked: 0 };
 
-  // Stagger initial start per slot so N active slots don't all fire at t=0.
-  // Combined with the global list-request gate, this smooths the outbound
-  // request stream across the shared worker IP.
-  const stagger = LIST_MIN_GAP_MS;
-  const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
-  let ticks = 0;
+    // Stagger initial start per slot so N active slots don't all fire at t=0.
+    // Combined with the global list-request gate, this smooths the outbound
+    // request stream across the shared worker IP.
+    const stagger = LIST_MIN_GAP_MS;
+    const state = users.map((u, i) => ({ u: u as BotUser, nextAt: start + i * stagger }));
+    let ticks = 0;
 
-  try {
-    sweepMemory(
-      new Set(state.map((s) => s.u.id)),
-      new Set(state.map((s) => s.u.slot)),
-    );
-  } catch {
-    /* sweeping is never fatal */
-  }
-
-
-
-  while (Date.now() - start < budgetMs) {
-    const now = Date.now();
-    const due = state.filter((s) => s.nextAt <= now);
-    if (due.length === 0) {
-      const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
-      await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
-      continue;
+    // Seed the live interval cache from the rows we just fetched.
+    for (const u of users) {
+      intervalCache.set(u.id, {
+        ms: Math.max(200, Math.round(u.polling_interval_ms || 1000)),
+        at: Date.now(),
+      });
     }
-    await Promise.all(
-      due.map(async (s) => {
-        try {
-          await tickUser(s.u);
-        } catch (e) {
-          await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
-        }
-        ticks++;
-        const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
-        const fixedInterval = Math.max(200, Math.round(s.u.polling_interval_ms || 1000));
-        // STRICT FIXED — exact interval, no jitter.
-        s.nextAt = Math.max(cooldownUntil, Date.now() + fixedInterval);
-      }),
-    );
+
+    try {
+      sweepMemory(
+        new Set(state.map((s) => s.u.id)),
+        new Set(state.map((s) => s.u.slot)),
+      );
+    } catch {
+      /* sweeping is never fatal */
+    }
+
+    while (Date.now() - start < budgetMs) {
+      const now = Date.now();
+      const due = state.filter((s) => s.nextAt <= now);
+      if (due.length === 0) {
+        const sleepMs = Math.max(50, Math.min(...state.map((s) => s.nextAt - now)));
+        await sleep(Math.min(sleepMs, budgetMs - (Date.now() - start)));
+        continue;
+      }
+      // Re-read intervals from the database when the cache is stale, so a
+      // dashboard change to `polling_interval_ms` takes effect live.
+      await refreshIntervals(state.map((s) => s.u.id));
+      await Promise.all(
+        due.map(async (s) => {
+          try {
+            await tickUser(s.u);
+          } catch (e) {
+            await log(s.u.id, s.u.slot, "error", `tick error: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          ticks++;
+          const cooldownUntil = perUserCooldownUntil.get(s.u.id) ?? 0;
+          const fixedInterval =
+            intervalCache.get(s.u.id)?.ms ??
+            Math.max(200, Math.round(s.u.polling_interval_ms || 1000));
+          // STRICT FIXED — exact interval, no jitter.
+          s.nextAt = Math.max(cooldownUntil, Date.now() + fixedInterval);
+        }),
+      );
+    }
+    return { ticked: ticks };
+  } finally {
+    cycleRunning = false;
   }
-  return { ticked: ticks };
 }
