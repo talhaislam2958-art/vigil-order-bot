@@ -26,9 +26,25 @@ async function requireSession(token: string) {
     .select("token, expires_at")
     .eq("token", token)
     .maybeSingle();
-  if (error || !data) throw new Error("Unauthorized");
+  if (error) throw new Error("Unable to check master session. Please retry.");
+  if (!data) throw new Error("Unauthorized");
   if (new Date(data.expires_at).getTime() < Date.now()) throw new Error("Session expired");
 }
+
+// This endpoint only validates an existing server-issued session. It never
+// returns protected data, so a stale browser token can be rejected safely
+// before mounting any dashboard queries or starting the refresh timer.
+export const checkMasterSession = createServerFn({ method: "POST" })
+  .inputValidator((d: { token: string }) => z.object({ token: z.string().uuid() }).parse(d))
+  .handler(async ({ data }) => {
+    try {
+      await requireSession(data.token);
+      return { valid: true };
+    } catch (error) {
+      if (error instanceof Error && /unauthor|session expired/i.test(error.message)) return { valid: false };
+      throw error;
+    }
+  });
 
 // ----- Master password setup / login -----
 
