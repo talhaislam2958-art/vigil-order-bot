@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import {
   getSetupState,
+  checkMasterSession,
   setupMaster,
   loginMaster,
   logoutMaster,
@@ -45,6 +46,10 @@ export const Route = createFileRoute("/")({
     meta: [
       { title: "Order Receiver Bot — Cyber Control Center" },
       { name: "description", content: "Multi-user 24/7 order receiver bot dashboard with neon cyber UI and Telegram alerts." },
+      { property: "og:title", content: "Order Receiver Bot — Cyber Control Center" },
+      { property: "og:description", content: "Multi-user order receiver dashboard with order status and Telegram alerts." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
       { name: "robots", content: "noindex,nofollow" },
     ],
   }),
@@ -80,20 +85,39 @@ function useTheme(): [Theme, (t: Theme) => void] {
 
 function App() {
   const [token, setToken] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [bootChecked, setBootChecked] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [theme, setTheme] = useTheme();
   const checkSetup = useServerFn(getSetupState);
+  const checkSession = useServerFn(checkMasterSession);
 
   useEffect(() => {
-    setToken(typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null);
+    let cancelled = false;
+    const saved = localStorage.getItem(TOKEN_KEY);
+    if (saved && /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(saved)) {
+      checkSession({ data: { token: saved } })
+        .then(({ valid }) => {
+          if (cancelled) return;
+          if (valid) setToken(saved);
+          else localStorage.removeItem(TOKEN_KEY);
+        })
+        .catch(() => {
+          if (!cancelled) toast.error("Unable to check access. Please unlock again.");
+        })
+        .finally(() => { if (!cancelled) setSessionChecked(true); });
+    } else {
+      if (saved) localStorage.removeItem(TOKEN_KEY);
+      setSessionChecked(true);
+    }
     checkSetup()
-      .then((r) => setNeedsSetup(r.needsSetup))
+      .then((r) => { if (!cancelled) setNeedsSetup(r.needsSetup); })
       .catch(() => {})
-      .finally(() => setBootChecked(true));
-  }, [checkSetup]);
+      .finally(() => { if (!cancelled) setBootChecked(true); });
+    return () => { cancelled = true; };
+  }, [checkSetup, checkSession]);
 
-  if (!bootChecked) {
+  if (!bootChecked || !sessionChecked) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <Loader2 className="size-6 animate-spin neon-text" />

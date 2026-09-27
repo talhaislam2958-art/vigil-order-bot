@@ -182,12 +182,19 @@ export async function sendDualTelegram(
 }
 
 export async function loginUser(u: BotUser): Promise<string | null> {
-  const r = await fetch(`${BASE}/login`, {
+  const response = await requestUpstream(`${BASE}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: u.username, password: u.password }),
   });
-  const j = (await r.json().catch(() => ({}))) as { token?: string; code?: number; msg?: string };
+  if (response.status === 0) {
+    registerNetworkFailure(u.id);
+    await log(u.id, u.slot, "error", `[NETWORK ERROR] Login transport unavailable: ${response.error}. Retrying after network recovery; credentials unchanged.`);
+    return null;
+  }
+  clearNetworkFailure(u.id);
+  let j: { token?: string; code?: number; msg?: string } = {};
+  try { j = JSON.parse(response.text); } catch { /* report the HTTP status below */ }
   if (j.token) {
     await supabaseAdmin
       .from("bot_users")
@@ -199,49 +206,84 @@ export async function loginUser(u: BotUser): Promise<string | null> {
       })
       .eq("id", u.id);
     await log(u.id, u.slot, "success", "Login OK, token refreshed");
+    u.auth_token = j.token;
     return j.token;
   }
   const msg = (j.msg || "").toLowerCase();
-  if (msg.includes("password") || msg.includes("user") || j.code === 500) {
+  if (msg.includes("password") || msg.includes("user")) {
     await setStatus(u.id, "invalid_creds", "Invalid Username or Password");
     await log(u.id, u.slot, "error", `Login failed: ${j.msg || "unknown"}`);
   } else if (msg.includes("ban") || msg.includes("forbid") || msg.includes("permission") || j.code === 403) {
     await setStatus(u.id, "suspended", "No Permission / Account Suspended");
     await log(u.id, u.slot, "error", `Login forbidden: ${j.msg || "unknown"}`);
   } else {
-    await setStatus(u.id, "error", j.msg || `HTTP ${r.status}`);
-    await log(u.id, u.slot, "error", `Login error: ${j.msg || r.status}`);
+    await setStatus(u.id, "error", j.msg || `HTTP ${response.status}`);
+    await log(u.id, u.slot, "error", `Login error: ${j.msg || response.status}`);
   }
   return null;
 }
 
-/**
- * Mobile signature + KEEP-ALIVE / NO-CACHE headers. The Worker fetch runtime
- * pools sockets transparently when Connection: keep-alive is sent, reusing the
- * same TCP connection for back-to-back requests against the same origin and
- * blinding the per-connection firewall counter for this slot's burst.
- */
-const MOBILE_HEADERS = {
-  Accept: "application/json, text/plain, */*",
-  "Content-Type": "application/json;charset=utf-8",
-  "Accept-Language": "en-US,en;q=0.9",
-  Origin: "https://h5.parttime.mobi",
-  Referer: "https://h5.parttime.mobi/",
-  "User-Agent":
-    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
-  "Sec-Ch-Ua": '"Chromium";v="139", "Not;A=Brand";v="99"',
-  "Sec-Ch-Ua-Mobile": "?1",
-  "Sec-Ch-Ua-Platform": '"Android"',
-  "Sec-Fetch-Dest": "empty",
-  "Sec-Fetch-Mode": "cors",
-  "Sec-Fetch-Site": "same-origin",
-  Connection: "keep-alive",
-  "Keep-Alive": "timeout=60, max=1000",
-  "Cache-Control": "no-cache, no-store, must-revalidate",
-  Pragma: "no-cache",
-};
+// Let Bun/the host runtime manage TLS and connections. Only send protocol-required
+// headers; browser/device/Connection/Keep-Alive headers cannot repair a socket.
+const upstreamHeaders = (token: string): Record<string, string> => ({
+  Accept: "application/json",
+  Authorization: `Bearer ${token}`,
+});
+
+type UpstreamResult = { status: number; text: string; ms: number; error?: string };
+
+function networkErrorDetail(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const cause = error.cause;
+  const detail = cause instanceof Error
+    ? `${cause.name}: ${cause.message}${"code" in cause ? ` (${String(cause.code)})` : ""}`
+    : "";
+  return `${error.name}: ${error.message}${detail ? `; cause: ${detail}` : ""}`;
+}
+
+// A response (even 429/500) is NOT a network failure. GET/login can safely
+// retry a dropped connection; POST /receive cannot, since the claim may have
+// succeeded before the response was lost. The existing grab loop handles it.
+async function requestUpstream(
+  url: string,
+  init: RequestInit,
+  options: { timeoutMs?: number; retryTransport?: boolean } = {},
+): Promise<UpstreamResult> {
+  const maxAttempts = options.retryTransport === false ? 1 : 2;
+  const timeoutMs = options.timeoutMs ?? 4000;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const started = Date.now();
+    console.log(`[API CALL] ${init.method || "GET"} ${url} · attempt ${attempt}/${maxAttempts}`);
+    try {
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const text = await response.text();
+      const ms = Date.now() - started;
+      // Never print the login body: it contains a bearer token.
+      console.log(`[API RESPONSE] ${init.method || "GET"} ${url} → HTTP ${response.status} · ${ms}ms · body: ${url.endsWith("/login") ? "[redacted]" : text || "(empty)"}`);
+      return { status: response.status, text, ms };
+    } catch (e) {
+      const error = networkErrorDetail(e);
+      console.error(`[NETWORK ERROR] ${init.method || "GET"} ${url} · attempt ${attempt}/${maxAttempts} after ${Date.now() - started}ms: ${error}`);
+      if (attempt === maxAttempts) return { status: 0, text: "", error, ms: Date.now() - started };
+      await sleep(400 * attempt);
+    }
+  }
+  return { status: 0, text: "", error: "Transport retries exhausted", ms: 0 };
+}
 
 const perUserCooldownUntil = new Map<string, number>();
+const networkFailureCount = new Map<string, number>();
+
+function registerNetworkFailure(userId: string): void {
+  const failures = Math.min((networkFailureCount.get(userId) ?? 0) + 1, 5);
+  networkFailureCount.set(userId, failures);
+  perUserCooldownUntil.set(userId, Date.now() + Math.min(30_000, 2000 * 2 ** (failures - 1)));
+}
+
+function clearNetworkFailure(userId: string): void {
+  networkFailureCount.delete(userId);
+  // Never clear a server-enforced rate-limit cooldown here.
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -307,55 +349,34 @@ export function clearTokenPool(userId: string): void {
   perUserCooldownUntil.delete(userId);
   sessionStartedAt.delete(userId);
   lastHealthyAt.delete(userId);
-  sessionEpoch.delete(userId);
+  networkFailureCount.delete(userId);
 }
 
 // ============================================================================
 // ACTIVE SESSION HEALTH MONITOR — proactive 7-minute session recycle
 // ----------------------------------------------------------------------------
-// The upstream/worker session degrades silently after roughly 8-10 minutes:
-// sockets go stale, pooled tokens stop returning data and the loop freezes.
-// Instead of waiting for the thread to die, every session is age-checked on
-// every tick and PROACTIVELY torn down at the 7-minute mark (or earlier if it
-// has not produced a healthy response within the stall window). The teardown
-// flushes tokens, cooldown locks, the shared list-gate chain and the cached
-// admin config, bumps the session epoch (which rotates connection headers so
-// the runtime opens brand-new sockets), then rebuilds a fresh token pool —
-// functionally identical to a manual version revert, but automatic.
+// Session refresh is only useful while the upstream is reachable. Transport
+// outages must not trigger token rebuilding or pretend to reset runtime sockets.
 // ============================================================================
 const SESSION_MAX_AGE_MS = 7 * 60 * 1000; // proactive recycle at 7 minutes
-const SESSION_STALL_MS = 90 * 1000; // no healthy response for 90s => frozen
 
 const sessionStartedAt = new Map<string, number>();
 const lastHealthyAt = new Map<string, number>();
-const sessionEpoch = new Map<string, number>();
 
 /** Called after every successful (HTTP 200) poll so the watchdog sees liveness. */
 export function markSessionHealthy(userId: string): void {
   lastHealthyAt.set(userId, Date.now());
 }
 
-/** Fresh header set per session epoch — forces new sockets after a recycle. */
-function mobileHeaders(userId: string): Record<string, string> {
-  const epoch = sessionEpoch.get(userId) ?? 0;
-  return {
-    ...MOBILE_HEADERS,
-    "X-Session-Epoch": String(epoch),
-    "X-Request-Id": `${epoch}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-  };
-}
-
 /**
- * DEEP CLEAN + RESTART. Flushes every stuck in-memory buffer tied to this slot,
- * rotates connection headers, and re-initializes a fresh polling session.
+ * Refreshes tokens periodically after healthy communication with the upstream.
  */
 async function recycleSession(u: BotUser, reason: string): Promise<void> {
-  const epoch = (sessionEpoch.get(u.id) ?? 0) + 1;
   await log(
     u.id,
     u.slot,
     "warn",
-    `[SESSION HEALTH] ${reason} — flushing tokens/sockets and re-initializing a fresh session (epoch #${epoch}).`,
+    `[SESSION HEALTH] ${reason} — refreshing authentication sessions.`,
   );
 
   // 1. Deep clean: drop all per-slot memory buffers.
@@ -364,25 +385,21 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
   poolBuilding.delete(u.id);
   perUserCooldownUntil.delete(u.id);
 
-  // 2. Reset shared outbound gate so a wedged chain can't block the new loop.
-  listGateChain = Promise.resolve();
-  listLastAt = 0;
-
-  // 3. Rotate headers / invalidate caches so new sockets + fresh config are used.
-  sessionEpoch.set(u.id, epoch);
+  // Keep the shared request queue intact: other slots can be waiting on it.
   invalidateAdminTelegramCache();
 
-  // 4. Clear the stored token so single-session fallback re-logins cleanly.
+  // Clear the stored token so single-session fallback re-logins cleanly.
   try {
     await supabaseAdmin
       .from("bot_users")
       .update({ auth_token: null, auth_token_at: null })
       .eq("id", u.id);
+    u.auth_token = null;
   } catch {
     /* non-fatal */
   }
 
-  // 5. Fresh session clock, then rebuild the pool immediately.
+  // Fresh session clock, then rebuild the pool immediately.
   sessionStartedAt.set(u.id, Date.now());
   lastHealthyAt.set(u.id, Date.now());
 
@@ -407,22 +424,15 @@ async function healthGate(u: BotUser): Promise<boolean> {
   if (!started) {
     sessionStartedAt.set(u.id, now);
     lastHealthyAt.set(u.id, now);
-    if (!sessionEpoch.has(u.id)) sessionEpoch.set(u.id, 1);
     return false;
   }
 
   const age = now - started;
-  const idle = now - (lastHealthyAt.get(u.id) ?? now);
-
-  if (age >= SESSION_MAX_AGE_MS) {
+  if (age >= SESSION_MAX_AGE_MS && now - (lastHealthyAt.get(u.id) ?? 0) < SESSION_MAX_AGE_MS && !networkFailureCount.has(u.id)) {
     await recycleSession(
       u,
       `Session age ${Math.round(age / 1000)}s reached the 7-minute proactive refresh mark`,
     );
-    return true;
-  }
-  if (idle >= SESSION_STALL_MS) {
-    await recycleSession(u, `No healthy response for ${Math.round(idle / 1000)}s (frozen session detected)`);
     return true;
   }
   return false;
@@ -430,17 +440,18 @@ async function healthGate(u: BotUser): Promise<boolean> {
 
 
 async function rawLogin(u: BotUser): Promise<string | null> {
-  try {
-    const r = await fetch(`${BASE}/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: u.username, password: u.password }),
-    });
-    const j = (await r.json().catch(() => ({}))) as { token?: string };
-    return j.token || null;
-  } catch {
+  const result = await requestUpstream(`${BASE}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: u.username, password: u.password }),
+  });
+  if (result.status === 0) {
+    registerNetworkFailure(u.id);
     return null;
   }
+  clearNetworkFailure(u.id);
+  try { return (JSON.parse(result.text) as { token?: string }).token || null; }
+  catch { return null; }
 }
 
 async function buildTokenPool(u: BotUser): Promise<PoolToken[] | null> {
@@ -451,6 +462,7 @@ async function buildTokenPool(u: BotUser): Promise<PoolToken[] | null> {
     for (let i = 0; i < POOL_SIZE; i++) {
       const t = await rawLogin(u);
       if (t) tokens.push({ token: t, hits: 0, cooldownUntil: 0, index: tokens.length + 1 });
+      if (networkFailureCount.has(u.id)) break;
       await sleep(150);
     }
     if (tokens.length === 0) return null;
@@ -528,35 +540,27 @@ function acquireListSlot(): Promise<() => void> {
 
 async function getOrderList(
   token: string,
-  userId?: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
   const release = await acquireListSlot();
-  const t0 = Date.now();
+  // Reserve the minimum gap between request starts, not the whole socket
+  // lifetime. One slow upstream response must not stall all other slots.
+  release();
   const url =
     `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
     `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
-  // Verbose stdout trace for VPS/PM2: exact request URL up front.
-  console.log(`[API CALL] GET ${url}`);
-  try {
-    const r = await fetch(url, {
+  const result = await requestUpstream(url, {
       method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(userId ? mobileHeaders(userId) : MOBILE_HEADERS),
-      },
-      keepalive: true,
+      headers: upstreamHeaders(token),
     });
-    const text = await r.text();
-    const ms = Date.now() - t0;
-    // Full server response to stdout — nothing is swallowed.
-    console.log(`[API RESPONSE] ${url} → HTTP ${r.status} · ${ms}ms · body: ${text || "(empty)"}`);
+    const { status, text, ms } = result;
+    if (status === 0) return { status, orders: [], raw: null, error: result.error, rateLimited: false, ms };
     let j: unknown = {};
     try {
       j = text ? JSON.parse(text) : {};
     } catch {
       console.error(`[API ERROR] Non-JSON response from order list: ${text.slice(0, 500)}`);
       return {
-        status: r.status,
+        status,
         orders: [],
         raw: text,
         error: `Parse error: ${text.slice(0, 200)}`,
@@ -564,17 +568,8 @@ async function getOrderList(
         ms,
       };
     }
-    const response = { data: j as { rows?: OrderRow[] } };
-    const orders = response.data.rows || [];
-    return { status: r.status, orders, raw: j, rateLimited: hasTooManyRequests(j), ms };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    // Network-level failure (DNS, firewall, connection reset, timeout).
-    console.error(`[NETWORK ERROR] GET ${url} failed after ${Date.now() - t0}ms: ${error}`);
-    return { status: 0, orders: [], raw: null, error, rateLimited: hasTooManyRequests(null, error), ms: Date.now() - t0 };
-  } finally {
-    release();
-  }
+  const orders = (j as { data?: { rows?: OrderRow[] } })?.data?.rows;
+  return { status, orders: Array.isArray(orders) ? orders : [], raw: j, rateLimited: hasTooManyRequests(j), ms };
 }
 
 
@@ -657,20 +652,15 @@ function pickIban(o: OrderRow): string {
 async function receiveOrderOnce(token: string, order: OrderRow) {
   const url = `${BASE}/bus/user/order/receive`;
   const body = JSON.stringify(order);
-  console.log(`[API CALL] POST ${url} · order=${order.orderNo ?? order.orderId ?? order.id ?? "?"} · payload: ${body.slice(0, 500)}`);
-  const t0 = Date.now();
-  try {
-    const r = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...MOBILE_HEADERS,
-      },
-      body,
-      keepalive: true,
-    });
-    const text = await r.text();
-    console.log(`[API RESPONSE] POST ${url} → HTTP ${r.status} · ${Date.now() - t0}ms · body: ${text || "(empty)"}`);
+  console.log(`[API PAYLOAD] POST ${url} · order=${order.orderNo ?? order.orderId ?? order.id ?? "?"} · payload: ${body}`);
+  const result = await requestUpstream(url, {
+    method: "POST",
+    headers: { ...upstreamHeaders(token), "Content-Type": "application/json" },
+    body,
+  }, { timeoutMs: 2500, retryTransport: false });
+  if (result.status === 0) return { status: 0, ok: false, code: undefined as number | undefined, msg: result.error, raw: "" };
+  const { text } = result;
+  {
     let j: { code?: number; msg?: string } = {};
     try {
       j = text ? JSON.parse(text) : {};
@@ -678,11 +668,7 @@ async function receiveOrderOnce(token: string, order: OrderRow) {
       j = { msg: text.slice(0, 200) };
     }
     const confirmed = j.code === 200;
-    return { status: r.status, ok: confirmed, code: j.code, msg: j.msg, raw: text };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error(`[NETWORK ERROR] POST ${url} failed after ${Date.now() - t0}ms: ${msg}`);
-    return { status: 0, ok: false, code: undefined as number | undefined, msg, raw: "" };
+    return { status: result.status, ok: confirmed, code: j.code, msg: j.msg, raw: text };
   }
 }
 
@@ -754,9 +740,8 @@ async function aggressiveGrab(
  * Uses the MULTI-SESSION rotation engine when a token pool is available:
  *   - Each poll uses one selected token from the 10-token rotation array.
  *   - A healthy token continues polling until it reaches 5 successful hits, then rotates.
- *   - Any error (HTTP 500 / "Too many requests" / non-200 / rate-limit) triggers
- *     a PRE-EMPTIVE hot-swap: that token is marked cooldown (30s), engine
- *     instantly moves to the next healthy token on the very next tick.
+ *   - Only an explicit 401 re-authenticates a token. Network failures preserve
+ *     the token and back off; server rate limits pause the entire slot.
  *
  * Falls back to STABLE SINGLE-SESSION mode when the entire pool is exhausted
  * or cannot be built, preserving uptime.
@@ -805,15 +790,16 @@ export async function tickUser(u: BotUser): Promise<void> {
     }
   }
 
-  const tokenTag = selected ? `Token #${selected.index}/${pool!.length}` : `Single-Session`;
+  if ((perUserCooldownUntil.get(u.id) ?? 0) > Date.now()) return;
+  const tokenTag = selected ? `Token #${selected.index}/${pool?.length ?? 0}` : `Single-Session`;
   await log(
     u.id,
     u.slot,
     "info",
-    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag} (keep-alive · no-cache)`,
+    `[POLLING] Slot ${u.slot} → GET /bus/user/order/list · ${tokenTag}`,
   );
 
-  let list = await getOrderList(token, u.id);
+  let list = await getOrderList(token);
 
   // ---- 401 handling: refresh the specific token slot (or single-session) -----
   if (list.status === 401 || (list.raw as { code?: number })?.code === 401) {
@@ -824,18 +810,24 @@ export async function tickUser(u: BotUser): Promise<void> {
         selected.token = fresh;
         selected.hits = 0;
         token = fresh;
-        list = await getOrderList(token, u.id);
+        list = await getOrderList(token);
       } else {
-        selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
+        if (!networkFailureCount.has(u.id)) selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
         return;
       }
     } else {
       token = await loginUser(u);
       if (!token) return;
-      list = await getOrderList(token, u.id);
+      list = await getOrderList(token);
     }
   }
 
+  if (list.status === 0) {
+    registerNetworkFailure(u.id);
+    await log(u.id, u.slot, "error", `[NETWORK ERROR] Slot ${u.slot} cannot reach upstream: ${list.error || "connection failed"}. Token unchanged; next attempt after transport backoff.`);
+    return;
+  }
+  clearNetworkFailure(u.id);
   if (list.status === 200) markSessionHealthy(u.id);
 
   const rawText = typeof list.raw === "string" ? list.raw : JSON.stringify(list.raw ?? {});
@@ -844,53 +836,27 @@ export async function tickUser(u: BotUser): Promise<void> {
   const innerCode = (list.raw as { code?: number } | null)?.code;
   const isError =
     list.rateLimited ||
+    Boolean(list.error) ||
     list.status !== 200 ||
     (innerCode !== undefined && innerCode !== 200);
 
-  // ---- PRE-EMPTIVE SWAP path (multi-session) ---------------------------------
-  if (isError && selected) {
-    const nextIdx = nextHealthyIndex(u.id, selected);
-    const responseText = serverMsg || list.error || `HTTP ${list.status}`;
+  // Rate limits and upstream 5xx are shared transport/server conditions, not
+  // evidence that a token is bad. Switching tokens only multiplies requests.
+  if (isError) {
     await log(
       u.id,
       u.slot,
       "error",
-      `[SERVER RESPONSE] - Token #${selected.index} hit a block at ${selected.hits} hits. Response: ${responseText}. ` +
-        (nextIdx
-          ? `Swapping to Token #${nextIdx} immediately...`
-          : `All tokens on cooldown — will fallback to Single-Session next tick.`) +
-        ` · [RAW DATA]: ${rawSnippet}`,
+      `[SERVER RESPONSE] Slot ${u.slot} · ${tokenTag} · HTTP ${list.status} · ${serverMsg || list.error || "Unknown server error"} · [RAW DATA]: ${rawSnippet}`,
     );
-    selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
-    selected.hits = 0;
-    if (nextIdx) focusIndex(u.id, nextIdx);
-    return;
-  }
-
-  // ---- Single-session error handling (preserves prior behaviour) -------------
-  if (isError) {
     if (
       list.rateLimited ||
       list.status === 429 ||
       (list.status === 500 && hasTooManyRequests(list.raw, list.error))
     ) {
-      await log(
-        u.id,
-        u.slot,
-        "error",
-        `[SERVER ALERT] Slot ${u.slot} received: ${serverMsg || "Too many requests. Please try again later."} (HTTP ${list.status}) · [RAW DATA]: ${rawSnippet}`,
-      );
       await applyRateLimitCooldown(u);
       return;
     }
-    await log(
-      u.id,
-      u.slot,
-      "error",
-      list.status === 0
-        ? `[NETWORK ERROR] Slot ${u.slot} cannot reach server: ${list.error || "connection failed"} (firewall/DNS/timeout?) · ${list.ms}ms`
-        : `[SERVER ALERT] Slot ${u.slot} HTTP ${list.status} · ${serverMsg || list.error || ""} · [RAW DATA]: ${rawSnippet}`,
-    );
     return;
   }
 
@@ -901,7 +867,7 @@ export async function tickUser(u: BotUser): Promise<void> {
       u.id,
       u.slot,
       "success",
-      `[ENGINE STATUS] - Token #${selected.index} active (1-${pool!.length}). Hits: ${selected.hits}/${POOL_HIT_LIMIT}. · ${list.ms}ms · rows=${list.orders.length}`,
+      `[ENGINE STATUS] - Token #${selected.index} active (1-${pool?.length ?? 0}). Hits: ${selected.hits}/${POOL_HIT_LIMIT}. · ${list.ms}ms · rows=${list.orders.length}`,
     );
     if (selected.hits >= POOL_HIT_LIMIT) {
       const nextIdx = nextHealthyIndex(u.id, selected);
@@ -1081,35 +1047,17 @@ export async function tickUser(u: BotUser): Promise<void> {
 }
 
 // ============================================================================
-// MEMORY SWEEP + KEEP-ALIVE
+// MEMORY SWEEP
 // Per-slot in-memory maps (token pools, session clocks, cooldowns, log counters)
 // are pruned every cycle for slots that are no longer active, so nothing leaks
-// across hours of runtime. The keep-alive ping keeps the upstream connection and
-// the cloud worker warm without opening extra sockets per tick.
+// across hours of runtime. No background ping: it creates unnecessary traffic.
 // ============================================================================
-const KEEPALIVE_EVERY_MS = 4 * 60 * 1000;
-let lastKeepAliveAt = 0;
-
 function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
-  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, sessionStartedAt, lastHealthyAt, sessionEpoch] as unknown as Map<string, unknown>[]) {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, networkFailureCount, sessionStartedAt, lastHealthyAt] as unknown as Map<string, unknown>[]) {
     for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
   }
   for (const key of Array.from(logInsertCount.keys())) {
     if (key !== -1 && !activeSlots.has(key)) logInsertCount.delete(key);
-  }
-}
-
-async function keepAlive(): Promise<void> {
-  if (Date.now() - lastKeepAliveAt < KEEPALIVE_EVERY_MS) return;
-  lastKeepAliveAt = Date.now();
-  try {
-    await fetch(`${BASE}/captchaImage?_t=${Date.now()}`, {
-      method: "GET",
-      headers: MOBILE_HEADERS,
-      keepalive: true,
-    });
-  } catch {
-    /* keep-alive is best-effort and must never surface an error */
   }
 }
 
@@ -1140,7 +1088,6 @@ export async function runPollCycle(budgetMs = 8000): Promise<{ ticked: number }>
   } catch {
     /* sweeping is never fatal */
   }
-  void keepAlive();
 
 
 
