@@ -1060,7 +1060,7 @@ export async function tickUser(u: BotUser): Promise<void> {
 // across hours of runtime. No background ping: it creates unnecessary traffic.
 // ============================================================================
 function sweepMemory(activeIds: Set<string>, activeSlots: Set<number>): void {
-  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, networkFailureCount, sessionStartedAt, lastHealthyAt] as unknown as Map<string, unknown>[]) {
+  for (const m of [tokenPools, currentIndex, poolBuilding, perUserCooldownUntil, networkFailureCount, sessionStartedAt, lastHealthyAt, intervalCache] as unknown as Map<string, unknown>[]) {
     for (const key of Array.from(m.keys())) if (!activeIds.has(key)) m.delete(key);
   }
   for (const key of Array.from(logInsertCount.keys())) {
