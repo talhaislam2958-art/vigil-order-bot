@@ -206,6 +206,7 @@ export async function loginUser(u: BotUser): Promise<string | null> {
       })
       .eq("id", u.id);
     await log(u.id, u.slot, "success", "Login OK, token refreshed");
+    u.auth_token = j.token;
     return j.token;
   }
   const msg = (j.msg || "").toLowerCase();
@@ -264,7 +265,7 @@ async function requestUpstream(
       const error = networkErrorDetail(e);
       console.error(`[NETWORK ERROR] ${init.method || "GET"} ${url} · attempt ${attempt}/${maxAttempts} after ${Date.now() - started}ms: ${error}`);
       if (attempt === maxAttempts) return { status: 0, text: "", error, ms: Date.now() - started };
-      await sleep(300 * attempt);
+      await sleep(400 * attempt);
     }
   }
   return { status: 0, text: "", error: "Transport retries exhausted", ms: 0 };
@@ -393,6 +394,7 @@ async function recycleSession(u: BotUser, reason: string): Promise<void> {
       .from("bot_users")
       .update({ auth_token: null, auth_token_at: null })
       .eq("id", u.id);
+    u.auth_token = null;
   } catch {
     /* non-fatal */
   }
@@ -739,9 +741,8 @@ async function aggressiveGrab(
  * Uses the MULTI-SESSION rotation engine when a token pool is available:
  *   - Each poll uses one selected token from the 10-token rotation array.
  *   - A healthy token continues polling until it reaches 5 successful hits, then rotates.
- *   - Any error (HTTP 500 / "Too many requests" / non-200 / rate-limit) triggers
- *     a PRE-EMPTIVE hot-swap: that token is marked cooldown (30s), engine
- *     instantly moves to the next healthy token on the very next tick.
+ *   - Only an explicit 401 re-authenticates a token. Network failures preserve
+ *     the token and back off; server rate limits pause the entire slot.
  *
  * Falls back to STABLE SINGLE-SESSION mode when the entire pool is exhausted
  * or cannot be built, preserving uptime.
@@ -812,7 +813,7 @@ export async function tickUser(u: BotUser): Promise<void> {
         token = fresh;
         list = await getOrderList(token);
       } else {
-        selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
+        if (!networkFailureCount.has(u.id)) selected.cooldownUntil = Date.now() + TOKEN_COOLDOWN_MS;
         return;
       }
     } else {

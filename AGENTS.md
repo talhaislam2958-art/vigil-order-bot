@@ -8,3 +8,5 @@
 > Commits you push to the connected branch sync back to Lovable and show up in
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
+
+- Upstream order/login requests use bounded standard fetch with minimal headers; transport failures retain the current token and back off, because socket/DNS outages are not authentication failures and browser spoofing headers cannot fix them.
