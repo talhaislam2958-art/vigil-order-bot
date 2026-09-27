@@ -14,7 +14,7 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 async function getAdminClient() {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { supabaseAdmin } = await import("../integrations/supabase/client.server.ts");
   return supabaseAdmin;
 }
 
@@ -133,7 +133,7 @@ export const setAdminTelegramSettings = createServerFn({ method: "POST" })
         admin_telegram_chat_id: data.chat_id,
       } as never)
       .eq("id", 1);
-    const { invalidateAdminTelegramCache } = await import("./bot-engine.server");
+    const { invalidateAdminTelegramCache } = await import("./bot-engine.server.ts");
     invalidateAdminTelegramCache();
     return { ok: true };
   });
@@ -142,7 +142,7 @@ export const testAdminTelegram = createServerFn({ method: "POST" })
   .inputValidator((d: { token: string }) => z.object({ token: z.string().uuid() }).parse(d))
   .handler(async ({ data }) => {
     await requireSession(data.token);
-    const { getAdminTelegram, sendTelegram } = await import("./bot-engine.server");
+    const { getAdminTelegram, sendTelegram } = await import("./bot-engine.server.ts");
     const a = await getAdminTelegram(true);
     if (!a.bot_token || !a.chat_id) throw new Error("Admin Telegram not configured");
     const r = await sendTelegram(a.bot_token, a.chat_id, "✅ <b>Global Admin Telegram</b> connected. You will now receive mirrored alerts from every active slot.");
@@ -204,7 +204,7 @@ export const updateUser = createServerFn({ method: "POST" })
       patch.status = "idle";
       patch.status_message = "";
       patch.auth_token = null;
-      const { clearTokenPool } = await import("./bot-engine.server");
+      const { clearTokenPool } = await import("./bot-engine.server.ts");
       clearTokenPool(data.id);
     }
     const { error } = await supabaseAdmin.from("bot_users").update(patch as never).eq("id", data.id);
@@ -214,7 +214,7 @@ export const updateUser = createServerFn({ method: "POST" })
       // Kick off an initial login + tick in the background (don't await fully)
       const { data: row } = await supabaseAdmin.from("bot_users").select("*").eq("id", data.id).single();
       if (row) {
-        const { tickUser } = await import("./bot-engine.server");
+        const { tickUser } = await import("./bot-engine.server.ts");
         // fire and forget — but await briefly so login completes before response
         try {
           await tickUser(row as Parameters<typeof tickUser>[0]);
@@ -279,7 +279,7 @@ export const verifyUser = createServerFn({ method: "POST" })
           status_message: "Authorized — configure filters to start",
         })
         .eq("id", data.id);
-      const { log } = await import("./bot-engine.server");
+      const { log } = await import("./bot-engine.server.ts");
       await log(data.id, null, "success", "Credentials verified");
       return { ok: true as const };
     }
@@ -313,7 +313,7 @@ export const testTelegram = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await requireSession(data.token);
-    const { sendTelegram } = await import("./bot-engine.server");
+    const { sendTelegram } = await import("./bot-engine.server.ts");
     const r = await sendTelegram(data.bot_token, data.chat_id, "✅ Telegram configuration successful!");
     if (!r.ok) throw new Error(r.error || "Telegram test failed");
     return { ok: true };
@@ -363,7 +363,7 @@ export const deleteUser = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await requireSession(data.token);
     const supabaseAdmin = await getAdminClient();
-    const { clearTokenPool } = await import("./bot-engine.server");
+    const { clearTokenPool } = await import("./bot-engine.server.ts");
     clearTokenPool(data.id);
     const { data: row } = await supabaseAdmin
       .from("bot_users")
@@ -401,7 +401,7 @@ export const manualPoll = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => z.object({ token: z.string().uuid() }).parse(d))
   .handler(async ({ data }) => {
     await requireSession(data.token);
-    const { runPollCycle } = await import("./bot-engine.server");
+    const { runPollCycle } = await import("./bot-engine.server.ts");
     const r = await runPollCycle(5000);
     return r;
   });

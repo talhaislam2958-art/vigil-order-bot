@@ -1,7 +1,7 @@
 // Server-only bot engine. Talks to h5.parttime.mobi and Telegram.
 // Imported only by server function handlers and the public cron route handler.
 
-import { supabaseAdmin } from "@/integrations/supabase/client.server";
+import { supabaseAdmin } from "../integrations/supabase/client.server.ts";
 
 const BASE = "https://h5.parttime.mobi/prod-api";
 
