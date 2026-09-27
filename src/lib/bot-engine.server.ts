@@ -210,7 +210,7 @@ export async function loginUser(u: BotUser): Promise<string | null> {
     return j.token;
   }
   const msg = (j.msg || "").toLowerCase();
-  if (msg.includes("password") || msg.includes("user") || j.code === 500) {
+  if (msg.includes("password") || msg.includes("user")) {
     await setStatus(u.id, "invalid_creds", "Invalid Username or Password");
     await log(u.id, u.slot, "error", `Login failed: ${j.msg || "unknown"}`);
   } else if (msg.includes("ban") || msg.includes("forbid") || msg.includes("permission") || j.code === 403) {
@@ -542,11 +542,13 @@ async function getOrderList(
   token: string,
 ): Promise<{ status: number; orders: OrderRow[]; raw: unknown; error?: string; rateLimited: boolean; ms: number }> {
   const release = await acquireListSlot();
+  // Reserve the minimum gap between request starts, not the whole socket
+  // lifetime. One slow upstream response must not stall all other slots.
+  release();
   const url =
     `${BASE}/bus/user/order/list?pageNum=1&pageSize=20&status=0&type=all` +
     `&orderByColumn=createTime&isAsc=asc&_t=${Date.now()}`;
-  try {
-    const result = await requestUpstream(url, {
+  const result = await requestUpstream(url, {
       method: "GET",
       headers: upstreamHeaders(token),
     });
@@ -566,11 +568,8 @@ async function getOrderList(
         ms,
       };
     }
-    const orders = (j as { data?: { rows?: OrderRow[] } })?.data?.rows;
-    return { status, orders: Array.isArray(orders) ? orders : [], raw: j, rateLimited: hasTooManyRequests(j), ms };
-  } finally {
-    release();
-  }
+  const orders = (j as { data?: { rows?: OrderRow[] } })?.data?.rows;
+  return { status, orders: Array.isArray(orders) ? orders : [], raw: j, rateLimited: hasTooManyRequests(j), ms };
 }
 
 
@@ -837,6 +836,7 @@ export async function tickUser(u: BotUser): Promise<void> {
   const innerCode = (list.raw as { code?: number } | null)?.code;
   const isError =
     list.rateLimited ||
+    Boolean(list.error) ||
     list.status !== 200 ||
     (innerCode !== undefined && innerCode !== 200);
 
